@@ -1,0 +1,171 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ScreenStop</string>
+    <string name="launcher_activity_label">ScreenStop Home</string>
+
+    <!-- Navigation -->
+    <string name="nav_guard">Guard</string>
+    <string name="nav_apps">Apps</string>
+    <string name="nav_launcher">Launcher</string>
+    <string name="nav_messages">Messages</string>
+
+    <!-- Guard Screen -->
+    <string name="guard_title">ScreenStop</string>
+    <string name="guard_subtitle">Interrupt mindless scrolling.</string>
+    <string name="guard_status_armed">GUARD ARMED</string>
+    <string name="guard_status_disarmed">GUARD DISARMED</string>
+    <string name="guard_status_paused_exception">PAUSED · EXCEPTION APP</string>
+    <string name="guard_status_paused_in_app">PAUSED · IN SCREENSTOP</string>
+    <string name="guard_status_screen_off">SCREEN LOCKED · RESET</string>
+    <string name="guard_status_takeover">TAKEOVER ACTIVE</string>
+    <string name="guard_status_session">SESSION · %1$s</string>
+    <string name="guard_toggle_on">Active</string>
+    <string name="guard_toggle_off">Off</string>
+    <string name="guard_master_label">Usage Guard</string>
+    <string name="guard_master_hint_on">Monitors screen time, detox locks, and per-app prompts. Locking resets the timer.</string>
+    <string name="guard_master_hint_off">Turn on to enforce full-screen reminders, detox locks, and intention prompts.</string>
+    <string name="guard_interval_title">Reminder Interval</string>
+    <string name="guard_interval_subtitle">Base time before full-screen takeover triggers</string>
+    <string name="guard_interval_minutes_short">%1$dm</string>
+    <string name="guard_interval_minutes_long">%1$d min</string>
+    <string name="guard_reset_hint">Locking your phone resets the timer &amp; escalation level</string>
+    <string name="guard_escalation_title">Escalating Friction</string>
+    <string name="guard_escalation_desc">Each consecutive override without locking adds extra challenge words and shortens the next interval.</string>
+    <string name="guard_escalation_badge_base">LEVEL 1 · 1 WORD</string>
+    <string name="guard_escalation_badge_active">LEVEL %1$d · %2$d WORDS</string>
+    <string name="guard_test_takeover">Test Takeover Screen</string>
+    <string name="guard_test_takeover_desc">Preview the full-screen reminder &amp; challenge word flow right now.</string>
+    <string name="guard_test_prompt">Test \"How Long?\" Prompt</string>
+    <string name="guard_test_prompt_desc">Preview the per-app session timer prompt.</string>
+    <string name="guard_permissions_title">Required Access</string>
+    <string name="guard_permissions_ready">All system access granted</string>
+    <string name="guard_perm_overlay_title">Display Over Other Apps</string>
+    <string name="guard_perm_overlay_desc">Required to show takeovers, detox locks, and session prompts above apps.</string>
+    <string name="guard_perm_usage_title">Usage Access</string>
+    <string name="guard_perm_usage_desc">Required to detect exception apps, detox locks, and prompted apps.</string>
+    <string name="guard_perm_notif_title">Notifications</string>
+    <string name="guard_perm_notif_desc">Keeps the background guard running reliably while armed.</string>
+    <string name="guard_perm_grant">Grant</string>
+    <string name="guard_perm_granted">Granted</string>
+    <string name="guard_perm_missing_banner">Grant Display Over Other Apps and Usage Access to arm ScreenStop.</string>
+    <string name="guard_stat_detox">%1$d Detox Locked</string>
+    <string name="guard_stat_prompted">%1$d Prompted</string>
+    <string name="guard_stat_exceptions">%1$d Exempt</string>
+    <string name="guard_stat_messages">%1$d Messages</string>
+
+    <!-- Apps Control Screen -->
+    <string name="apps_title">App Controls</string>
+    <string name="apps_subtitle">Set detox locks, \"How long?\" prompts, or timer exceptions for any app.</string>
+    <string name="apps_filter_all">All</string>
+    <string name="apps_filter_detox">Detox Locked</string>
+    <string name="apps_filter_prompt">How Long?</string>
+    <string name="apps_filter_exempt">Exempt</string>
+    <string name="apps_search_hint">Search installed apps…</string>
+    <string name="apps_clear_search_cd">Clear search</string>
+    <string name="apps_loading">Scanning installed apps…</string>
+    <string name="apps_empty_search">No apps match \"%1$s\".</string>
+    <string name="apps_empty_filter">No apps in this category yet. Tap any app under All to configure it.</string>
+    <string name="apps_empty_apps">No launchable apps found on this device.</string>
+    <string name="apps_perm_note">Enable Usage Access on the Guard tab so ScreenStop can enforce app rules.</string>
+    <string name="apps_badge_detox">DETOX · %1$s</string>
+    <string name="apps_badge_prompt">HOW LONG?</string>
+    <string name="apps_badge_exempt">EXEMPT</string>
+    <string name="apps_rule_sheet_detox_title">Timed Detox Lock</string>
+    <string name="apps_rule_sheet_detox_desc">Hard-blocks this app until the timer expires. No word override on the lock screen.</string>
+    <string name="apps_rule_sheet_detox_active">Locked for %1$s remaining</string>
+    <string name="apps_rule_sheet_detox_unlock">Remove Lock</string>
+    <string name="apps_rule_sheet_prompt_title">\"How Long?\" Prompt on Open</string>
+    <string name="apps_rule_sheet_prompt_desc">Asks you to pick a session length whenever you open this app.</string>
+    <string name="apps_rule_sheet_exempt_title">Exception App</string>
+    <string name="apps_rule_sheet_exempt_desc">Pauses the global usage timer and never triggers a takeover.</string>
+    <string name="apps_rule_sheet_launcher_title">Minimalist Launcher</string>
+    <string name="apps_rule_sheet_pin_home">Pin to Home Screen</string>
+    <string name="apps_rule_sheet_hide_drawer">Hide from App Drawer</string>
+    <string name="apps_rule_sheet_rename">Rename Display Label</string>
+    <string name="apps_detox_locked_snack">%1$s locked for %2$s.</string>
+    <string name="apps_detox_unlocked_snack">Detox lock removed for %1$s.</string>
+
+    <!-- Launcher Hub & Minimalist Home -->
+    <string name="launcher_hub_title">Minimalist Home</string>
+    <string name="launcher_hub_subtitle">Replace your icon grid with a distraction-free, text-only launcher.</string>
+    <string name="launcher_status_default">ACTIVE DEFAULT LAUNCHER</string>
+    <string name="launcher_status_not_default">NOT SET AS DEFAULT HOME</string>
+    <string name="launcher_set_default">Set as Default Home App</string>
+    <string name="launcher_open_now">Open Minimalist Home</string>
+    <string name="launcher_show_guard_title">Show Guard Status on Home</string>
+    <string name="launcher_show_guard_desc">Displays live timer and detox count below the clock.</string>
+    <string name="launcher_favorites_header">PINNED HOME FAVORITES (%1$d / 7)</string>
+    <string name="launcher_favorites_empty">No favorites pinned yet. Tap any app in the Apps tab or long-press in the drawer to pin up to 7 text shortcuts.</string>
+    <string name="launcher_hidden_header">HIDDEN APPS (%1$d)</string>
+    <string name="launcher_unhide">Unhide</string>
+    <string name="launcher_unpin">Unpin</string>
+    <string name="launcher_home_all_apps">All Apps</string>
+    <string name="launcher_home_guard_btn">ScreenStop</string>
+    <string name="launcher_home_empty_favorites">Tap All Apps below, or long-press any app to pin it here.</string>
+    <string name="launcher_drawer_search_hint">Search apps…</string>
+    <string name="launcher_drawer_back_cd">Back to Home</string>
+    <string name="launcher_drawer_show_hidden">Show Hidden (%1$d)</string>
+    <string name="launcher_drawer_hide_hidden">Hide Hidden</string>
+    <string name="launcher_rename_title">Rename App Label</string>
+    <string name="launcher_rename_hint">Plain label (leave empty to reset)</string>
+    <string name="launcher_quick_open">Open App</string>
+    <string name="launcher_quick_pin">Pin to Home</string>
+    <string name="launcher_quick_unpin">Remove from Home</string>
+    <string name="launcher_quick_hide">Hide from Drawer</string>
+    <string name="launcher_quick_unhide">Show in Drawer</string>
+    <string name="launcher_quick_detox_2h">Detox Lock · 2 Hours</string>
+    <string name="launcher_quick_rename">Rename Label</string>
+
+    <!-- Messages Screen -->
+    <string name="messages_title">Reminder Messages</string>
+    <string name="messages_subtitle">Shown randomly when ScreenStop takes over your screen.</string>
+    <string name="messages_add">Add Message</string>
+    <string name="messages_reset">Reset Defaults</string>
+    <string name="messages_dialog_add_title">New Reminder Message</string>
+    <string name="messages_dialog_edit_title">Edit Reminder Message</string>
+    <string name="messages_input_hint">Write a direct, firm reminder…</string>
+    <string name="messages_save">Save</string>
+    <string name="messages_cancel">Cancel</string>
+    <string name="messages_delete_cd">Delete reminder message</string>
+    <string name="messages_edit_cd">Edit reminder message</string>
+    <string name="messages_last_guard">Keep at least one reminder message.</string>
+    <string name="messages_restored">Restored default reminder messages.</string>
+    <string name="messages_added">Reminder message added.</string>
+    <string name="messages_updated">Reminder message updated.</string>
+    <string name="messages_deleted">Reminder message removed.</string>
+
+    <!-- Takeover, Detox & How-Long Overlays -->
+    <string name="takeover_badge">TIME LIMIT REACHED</string>
+    <string name="takeover_preview_badge">TAKEOVER PREVIEW</string>
+    <string name="takeover_escalated_badge">OVERRIDE #%1$d · ESCALATED</string>
+    <string name="takeover_lock_tip">Put the phone down — locking the screen resets the timer and escalation immediately.</string>
+    <string name="takeover_challenge_label_single">TYPE THIS WORD TO CONTINUE</string>
+    <string name="takeover_challenge_label_multi">TYPE ALL %1$d WORDS TO CONTINUE</string>
+    <string name="takeover_input_placeholder">Type challenge phrase</string>
+    <string name="takeover_confirm_button">Confirm &amp; Dismiss</string>
+    <string name="takeover_mismatch_error">Text does not match. Type it deliberately or lock your phone.</string>
+
+    <string name="detox_badge">DETOX LOCK ACTIVE</string>
+    <string name="detox_headline">%1$s is locked.</string>
+    <string name="detox_subcopy">You chose to block this app. No override is available until the timer runs out.</string>
+    <string name="detox_remaining_label">UNLOCKS IN</string>
+    <string name="detox_go_home">Return to Home Screen</string>
+
+    <string name="prompt_badge">INTENTION CHECK</string>
+    <string name="prompt_headline">How long do you want to spend in %1$s?</string>
+    <string name="prompt_subcopy">Choose a deliberate session limit. ScreenStop will take over when time is up.</string>
+    <string name="prompt_never_mind">Never mind — Go Home</string>
+
+    <!-- Foreground Service Notification -->
+    <string name="notif_channel_name">ScreenStop Active Guard</string>
+    <string name="notif_channel_desc">Persistent indicator while ScreenStop is monitoring screen usage.</string>
+    <string name="notif_title_monitoring">ScreenStop Armed</string>
+    <string name="notif_text_monitoring">Interval: %1$s · Elapsed %2$s · Lock screen to reset</string>
+    <string name="notif_text_paused_exception">Paused in exception app · Elapsed %1$s</string>
+    <string name="notif_text_paused_in_app">Paused in ScreenStop · Elapsed %1$s</string>
+    <string name="notif_text_screen_off">Screen locked · Timer reset to 00:00</string>
+    <string name="notif_text_takeover">Takeover active · Type challenge or lock screen</string>
+    <string name="notif_text_detox">Detox lock active · Returning home</string>
+    <string name="notif_text_prompt">Waiting for session duration choice</string>
+    <string name="notif_action_disarm">Disarm</string>
+</resources>

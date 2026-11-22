@@ -1,0 +1,6 @@
+{
+  "name": "ScreenStop",
+  "description": "A dark minimalist phone-usage guard that takes over the screen after a chosen interval with firm reminders, random challenge-word dismissal, screen-off timer reset, and exception apps.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
