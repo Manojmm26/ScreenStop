@@ -2,14 +2,19 @@ package com.example.service
 
 import android.content.Context
 import android.graphics.PixelFormat
+import android.hardware.display.DisplayManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.view.ContextThemeWrapper
+import android.view.Display
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.WindowManager
 import android.widget.FrameLayout
+import androidx.activity.OnBackPressedDispatcher
+import androidx.activity.OnBackPressedDispatcherOwner
+import androidx.activity.setViewTreeOnBackPressedDispatcherOwner
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.lifecycle.Lifecycle
@@ -31,12 +36,10 @@ import com.example.ui.takeover.TakeoverScreen
 import com.example.ui.theme.ScreenStopTheme
 import com.example.util.PermissionChecker
 
-class TakeoverOverlayController(private val context: Context) {
+class TakeoverOverlayController(private val serviceContext: Context) {
 
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val windowManager =
-        context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-
+    private var activeWindowManager: WindowManager? = null
     private var overlayRoot: FrameLayout? = null
     private var lifecycleOwner: OverlayLifecycleOwner? = null
 
@@ -52,18 +55,47 @@ class TakeoverOverlayController(private val context: Context) {
         onShowFailed: () -> Unit = {}
     ) {
         mainHandler.post {
-            if (!PermissionChecker.hasOverlayPermission(context)) {
+            if (!PermissionChecker.hasOverlayPermission(serviceContext)) {
                 onShowFailed()
                 return@post
             }
             dismissInternal()
 
-            val themedContext = ContextThemeWrapper(context, R.style.Theme_MyApplication)
+            val windowType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+            } else {
+                @Suppress("DEPRECATION")
+                WindowManager.LayoutParams.TYPE_PHONE
+            }
+
+            // Use a true WindowContext on Android 11+ (API 30+) so WindowManager and ComposeView
+            // never crash from a non-visual application context.
+            val visualContext = createOverlayWindowContext(windowType)
+            val themedContext = ContextThemeWrapper(visualContext, R.style.Theme_MyApplication)
+            val wm = visualContext.getSystemService(Context.WINDOW_SERVICE) as? WindowManager
+            if (wm == null) {
+                onShowFailed()
+                return@post
+            }
+
             val owner = OverlayLifecycleOwner()
             owner.onCreate()
 
+            fun scheduleDismissAndRun(action: () -> Unit) {
+                // CRITICAL: Never remove a ComposeView synchronously inside its own onClick
+                // touch-event dispatch; defer to the next main-loop frame so Compose finishes cleanly.
+                mainHandler.post {
+                    dismissInternal()
+                    action()
+                }
+            }
+
             val composeView = ComposeView(themedContext).apply {
                 setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
+                setViewTreeLifecycleOwner(owner)
+                setViewTreeSavedStateRegistryOwner(owner)
+                setViewTreeViewModelStoreOwner(owner)
+                setViewTreeOnBackPressedDispatcherOwner(owner)
                 setContent {
                     ScreenStopTheme {
                         when (content) {
@@ -71,8 +103,7 @@ class TakeoverOverlayController(private val context: Context) {
                                 TakeoverScreen(
                                     session = content.session,
                                     onDismissConfirmed = {
-                                        dismissInternal()
-                                        onTakeoverConfirmed()
+                                        scheduleDismissAndRun(onTakeoverConfirmed)
                                     }
                                 )
                             }
@@ -82,8 +113,7 @@ class TakeoverOverlayController(private val context: Context) {
                                     appLabel = content.appLabel,
                                     blockedUntilMillis = content.blockedUntilMillis,
                                     onReturnHome = {
-                                        dismissInternal()
-                                        onReturnHome()
+                                        scheduleDismissAndRun(onReturnHome)
                                     }
                                 )
                             }
@@ -92,12 +122,10 @@ class TakeoverOverlayController(private val context: Context) {
                                 HowLongPromptScreen(
                                     appLabel = content.appLabel,
                                     onSelectDurationMinutes = { minutes ->
-                                        dismissInternal()
-                                        onDurationSelected(minutes)
+                                        scheduleDismissAndRun { onDurationSelected(minutes) }
                                     },
                                     onNeverMindGoHome = {
-                                        dismissInternal()
-                                        onReturnHome()
+                                        scheduleDismissAndRun(onReturnHome)
                                     }
                                 )
                             }
@@ -117,6 +145,7 @@ class TakeoverOverlayController(private val context: Context) {
                 setViewTreeLifecycleOwner(owner)
                 setViewTreeSavedStateRegistryOwner(owner)
                 setViewTreeViewModelStoreOwner(owner)
+                setViewTreeOnBackPressedDispatcherOwner(owner)
                 addView(
                     composeView,
                     FrameLayout.LayoutParams(
@@ -124,13 +153,6 @@ class TakeoverOverlayController(private val context: Context) {
                         FrameLayout.LayoutParams.MATCH_PARENT
                     )
                 )
-            }
-
-            val windowType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-            } else {
-                @Suppress("DEPRECATION")
-                WindowManager.LayoutParams.TYPE_PHONE
             }
 
             @Suppress("DEPRECATION")
@@ -152,13 +174,15 @@ class TakeoverOverlayController(private val context: Context) {
             }
 
             runCatching {
-                windowManager.addView(container, params)
+                wm.addView(container, params)
                 owner.onResume()
+                activeWindowManager = wm
                 overlayRoot = container
                 lifecycleOwner = owner
                 isShowing = true
             }.onFailure {
                 owner.onDestroy()
+                activeWindowManager = null
                 overlayRoot = null
                 lifecycleOwner = null
                 isShowing = false
@@ -171,15 +195,34 @@ class TakeoverOverlayController(private val context: Context) {
         mainHandler.post { dismissInternal() }
     }
 
+    private fun createOverlayWindowContext(windowType: Int): Context {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            return runCatching {
+                val displayManager =
+                    serviceContext.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
+                val defaultDisplay = displayManager.getDisplay(Display.DEFAULT_DISPLAY)
+                if (defaultDisplay != null) {
+                    serviceContext.createDisplayContext(defaultDisplay)
+                        .createWindowContext(windowType, null)
+                } else {
+                    serviceContext
+                }
+            }.getOrElse { serviceContext }
+        }
+        return serviceContext
+    }
+
     private fun dismissInternal() {
+        val wm = activeWindowManager
         val view = overlayRoot
         val owner = lifecycleOwner
+        activeWindowManager = null
         overlayRoot = null
         lifecycleOwner = null
         isShowing = false
 
-        if (view != null) {
-            runCatching { windowManager.removeViewImmediate(view) }
+        if (wm != null && view != null && view.isAttachedToWindow) {
+            runCatching { wm.removeView(view) }
         }
         owner?.onDestroy()
     }
@@ -187,11 +230,13 @@ class TakeoverOverlayController(private val context: Context) {
     private class OverlayLifecycleOwner :
         LifecycleOwner,
         SavedStateRegistryOwner,
-        ViewModelStoreOwner {
+        ViewModelStoreOwner,
+        OnBackPressedDispatcherOwner {
 
         private val lifecycleRegistry = LifecycleRegistry(this)
         private val savedStateRegistryController = SavedStateRegistryController.create(this)
         override val viewModelStore: ViewModelStore = ViewModelStore()
+        override val onBackPressedDispatcher: OnBackPressedDispatcher = OnBackPressedDispatcher()
 
         override val lifecycle: Lifecycle
             get() = lifecycleRegistry
