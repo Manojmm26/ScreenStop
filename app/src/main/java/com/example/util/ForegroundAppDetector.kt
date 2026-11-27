@@ -16,8 +16,7 @@ class ForegroundAppDetector(private val context: Context) {
     private val keyguardManager: KeyguardManager? =
         context.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
 
-    @Volatile
-    private var lastKnownPackage: String? = null
+    private val resolver = ForegroundEventResolver(ownPackageName = context.packageName)
 
     fun isScreenUnlockedAndInteractive(): Boolean {
         val interactive = powerManager?.isInteractive ?: true
@@ -26,80 +25,90 @@ class ForegroundAppDetector(private val context: Context) {
     }
 
     fun clearCachedPackage() {
-        lastKnownPackage = null
+        resolver.clearTransientState()
         AppForegroundTracker.clearRecentLauncherLaunch()
     }
 
+    fun markReturnedHomeFrom(packageName: String) {
+        val now = System.currentTimeMillis()
+        AppForegroundTracker.clearRecentLauncherLaunch()
+        resolver.markReturnedHomeFrom(packageName, now)
+    }
+
     fun getCurrentForegroundPackage(): String? {
-        // Direct in-process truth for our own activities so we never rely on stale UsageEvents.
+        val now = System.currentTimeMillis()
+
+        // Direct in-process truth for ScreenStop's own activities so we never rely on stale UsageEvents.
         if (AppForegroundTracker.isMainActivityVisible || AppForegroundTracker.isOverlayActivityVisible) {
             return context.packageName
         }
 
-        // If user just tapped an app inside MinimalistLauncherActivity, report it right away
-        // while UsageStatsManager catches up.
-        val recentLaunch = AppForegroundTracker.peekRecentLauncherLaunch()
-        if (!recentLaunch.isNullOrBlank() && !AppForegroundTracker.isLauncherActivityVisible) {
-            lastKnownPackage = recentLaunch
-            return recentLaunch
-        }
-
         if (AppForegroundTracker.isLauncherActivityVisible) {
-            lastKnownPackage = context.packageName
+            resolver.noteOwnHomeVisible(now)
             return context.packageName
         }
 
+        val recentLaunch = AppForegroundTracker.peekRecentLauncherLaunch(nowMillis = now)
         if (!PermissionChecker.hasUsageStatsPermission(context)) {
-            return sanitizeExternalPackage(lastKnownPackage)
+            return resolver.resolve(
+                events = emptyList(),
+                nowEpochMillis = now,
+                isOwnUiVisible = false,
+                recentLauncherLaunch = recentLaunch
+            )
         }
 
-        val manager = usageStatsManager ?: return sanitizeExternalPackage(lastKnownPackage)
-        val now = System.currentTimeMillis()
-        val lookbackMs = if (lastKnownPackage == null || lastKnownPackage == context.packageName) {
-            15 * 60_000L
+        val manager = usageStatsManager ?: return resolver.resolve(
+            events = emptyList(),
+            nowEpochMillis = now,
+            isOwnUiVisible = false,
+            recentLauncherLaunch = recentLaunch
+        )
+
+        val lastProcessed = resolver.getLastProcessedTimestamp()
+        val startMillis = if (lastProcessed > 0L) {
+            (lastProcessed - 2_000L).coerceAtLeast(now - 5L * 60_000L)
         } else {
-            2 * 60_000L
+            now - 15L * 60_000L
         }
 
-        val detectedFromEvents = queryActiveFromEvents(manager, now - lookbackMs, now)
-        if (!detectedFromEvents.isNullOrBlank()) {
-            lastKnownPackage = detectedFromEvents
-            return detectedFromEvents
+        val rawEvents = queryUsageActivityEvents(manager, startMillis, now)
+        val firstPass = resolver.resolve(
+            events = rawEvents,
+            nowEpochMillis = now,
+            isOwnUiVisible = false,
+            recentLauncherLaunch = recentLaunch
+        )
+        if (!firstPass.isNullOrBlank()) {
+            return firstPass
         }
 
-        // If lastKnownPackage is still valid and not our own package (since our UI is not visible),
-        // user has simply stayed in the same app without switching activities.
-        val cached = sanitizeExternalPackage(lastKnownPackage)
-        if (cached != null) {
-            return cached
-        }
-
-        // Fallback to UsageStats ordered by lastTimeUsed when no recent events exist.
-        val fallback = queryLatestFromUsageStats(manager, now - 10 * 60_000L, now)
-        if (!fallback.isNullOrBlank()) {
-            lastKnownPackage = fallback
-            return fallback
-        }
-
-        return null
+        // Cold-start fallback when no UsageEvents exist in the lookback window.
+        val fallback = queryLatestFromUsageStats(manager, now - 10L * 60_000L, now)
+        return resolver.resolve(
+            events = emptyList(),
+            nowEpochMillis = now,
+            isOwnUiVisible = false,
+            recentLauncherLaunch = recentLaunch,
+            fallbackUsageStatsPackage = fallback?.first,
+            fallbackUsageStatsLastUsedMillis = fallback?.second ?: 0L
+        )
     }
 
-    private fun queryActiveFromEvents(
+    private fun queryUsageActivityEvents(
         manager: UsageStatsManager,
         startMillis: Long,
         endMillis: Long
-    ): String? {
+    ): List<UsageActivityEvent> {
         return try {
             val events = manager.queryEvents(startMillis, endMillis)
             val event = UsageEvents.Event()
-            val resumedTimestamps = LinkedHashMap<String, Long>()
-            var latestResumedPkg: String? = null
-            var latestResumedTime = 0L
+            val result = ArrayList<UsageActivityEvent>()
 
             while (events.hasNextEvent()) {
                 events.getNextEvent(event)
                 val pkg = event.packageName ?: continue
-                if (shouldIgnorePackage(pkg)) continue
+                val cls = event.className ?: ""
 
                 val isResumed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     event.eventType == UsageEvents.Event.ACTIVITY_RESUMED
@@ -116,28 +125,28 @@ class ForegroundAppDetector(private val context: Context) {
                 }
 
                 when {
-                    isResumed -> {
-                        resumedTimestamps[pkg] = event.timeStamp
-                        if (event.timeStamp >= latestResumedTime) {
-                            latestResumedTime = event.timeStamp
-                            latestResumedPkg = pkg
-                        }
-                    }
+                    isResumed -> result.add(
+                        UsageActivityEvent(
+                            packageName = pkg,
+                            className = cls,
+                            type = UsageActivityEventType.RESUMED,
+                            timestampMillis = event.timeStamp
+                        )
+                    )
 
-                    isPausedOrStopped -> {
-                        val resumedAt = resumedTimestamps[pkg]
-                        if (resumedAt != null && event.timeStamp >= resumedAt) {
-                            resumedTimestamps.remove(pkg)
-                        }
-                    }
+                    isPausedOrStopped -> result.add(
+                        UsageActivityEvent(
+                            packageName = pkg,
+                            className = cls,
+                            type = UsageActivityEventType.PAUSED_OR_STOPPED,
+                            timestampMillis = event.timeStamp
+                        )
+                    )
                 }
             }
-
-            // Prefer an app that is still currently resumed (not yet paused/stopped).
-            val currentlyResumed = resumedTimestamps.maxByOrNull { it.value }?.key
-            currentlyResumed ?: latestResumedPkg
+            result
         } catch (_: Throwable) {
-            null
+            emptyList()
         }
     }
 
@@ -145,32 +154,23 @@ class ForegroundAppDetector(private val context: Context) {
         manager: UsageStatsManager,
         startMillis: Long,
         endMillis: Long
-    ): String? {
+    ): Pair<String, Long>? {
         return try {
             val stats = manager.queryUsageStats(UsageStatsManager.INTERVAL_BEST, startMillis, endMillis)
                 ?: return null
-            stats
+            val latest = stats
                 .asSequence()
-                .filter { it.lastTimeUsed > startMillis && !shouldIgnorePackage(it.packageName) }
+                .filter {
+                    it.lastTimeUsed > startMillis &&
+                        it.packageName.isNotBlank() &&
+                        it.packageName != "com.android.systemui" &&
+                        it.packageName != context.packageName
+                }
                 .maxByOrNull { it.lastTimeUsed }
-                ?.packageName
+                ?: return null
+            latest.packageName to latest.lastTimeUsed
         } catch (_: Throwable) {
             null
         }
-    }
-
-    private fun shouldIgnorePackage(pkg: String): Boolean {
-        if (pkg.isBlank()) return true
-        if (pkg == "com.android.systemui") return true
-        // Never report ScreenStop itself when none of ScreenStop's activities are visible!
-        if (pkg == context.packageName && !AppForegroundTracker.isOwnUiVisible) return true
-        return false
-    }
-
-    private fun sanitizeExternalPackage(pkg: String?): String? {
-        if (pkg.isNullOrBlank()) return null
-        if (pkg == "com.android.systemui") return null
-        if (pkg == context.packageName && !AppForegroundTracker.isOwnUiVisible) return null
-        return pkg
     }
 }

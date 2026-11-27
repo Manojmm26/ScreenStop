@@ -8,6 +8,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import com.example.ui.ScreenStopApp
 import com.example.ui.theme.ScreenStopTheme
+import com.example.util.AppForegroundTracker
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -21,5 +22,15 @@ class MainActivity : ComponentActivity() {
                 ScreenStopApp()
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        AppForegroundTracker.setMainActivityVisible(true)
+    }
+
+    override fun onStop() {
+        AppForegroundTracker.setMainActivityVisible(false)
+        super.onStop()
     }
 }

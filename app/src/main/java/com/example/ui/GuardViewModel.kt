@@ -150,10 +150,13 @@ class GuardViewModel(application: Application) : AndroidViewModel(application) {
         isDefaultHomeFlow.value = PermissionChecker.isDefaultHomeLauncher(appContext)
         viewModelScope.launch {
             repository.pruneExpiredDetoxLocks()
-        }
-        if (uiState.value.settings.isGuardEnabled && !fresh.canArmGuard) {
-            viewModelScope.launch {
+            val persisted = repository.getCurrentSettings()
+            if (persisted.isGuardEnabled && !fresh.canArmGuard) {
                 repository.setGuardEnabled(false)
+                ScreenGuardService.stop(appContext)
+            } else if (persisted.hasActiveEnforcement() && fresh.canArmGuard) {
+                ScreenGuardService.start(appContext)
+            } else if (!persisted.hasActiveEnforcement()) {
                 ScreenGuardService.stop(appContext)
             }
         }
@@ -182,7 +185,7 @@ class GuardViewModel(application: Application) : AndroidViewModel(application) {
                 ScreenGuardService.start(appContext)
             } else {
                 repository.setGuardEnabled(false)
-                ScreenGuardService.stop(appContext)
+                syncEnforcementServiceLocked(currentPermissions)
             }
         }
     }
@@ -234,37 +237,58 @@ class GuardViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun togglePromptedPackage(packageName: String) {
-        viewModelScope.launch { repository.togglePromptedPackage(packageName) }
+        viewModelScope.launch {
+            repository.togglePromptedPackage(packageName)
+            val perms = PermissionChecker.checkAll(appContext)
+            permissionsFlow.value = perms
+            val persisted = repository.getCurrentSettings()
+            if (packageName in persisted.promptedPackages && !perms.canArmGuard) {
+                snackbarMessageFlow.value = appContext.getString(R.string.guard_perm_missing_banner)
+            }
+            syncEnforcementServiceLocked(perms, persisted)
+        }
     }
 
     fun setDetoxLock(packageName: String, durationMillis: Long, durationLabel: String) {
         viewModelScope.launch {
             repository.setDetoxLock(packageName, durationMillis)
+            val perms = PermissionChecker.checkAll(appContext)
+            permissionsFlow.value = perms
+            val persisted = repository.getCurrentSettings()
             val appLabel = PermissionChecker.resolveAppLabel(
                 appContext,
                 packageName,
-                uiState.value.settings.launcherRenamedApps
+                persisted.launcherRenamedApps
             )
-            snackbarMessageFlow.value = appContext.getString(
-                R.string.apps_detox_locked_snack,
-                appLabel,
-                durationLabel
-            )
+            snackbarMessageFlow.value = if (perms.canArmGuard) {
+                appContext.getString(
+                    R.string.apps_detox_locked_snack,
+                    appLabel,
+                    durationLabel
+                )
+            } else {
+                appContext.getString(R.string.guard_perm_missing_banner)
+            }
+            syncEnforcementServiceLocked(perms, persisted)
         }
     }
 
     fun clearDetoxLock(packageName: String) {
         viewModelScope.launch {
             repository.clearDetoxLock(packageName)
+            val perms = PermissionChecker.checkAll(appContext)
+            permissionsFlow.value = perms
+            val persisted = repository.getCurrentSettings()
             val appLabel = PermissionChecker.resolveAppLabel(
                 appContext,
                 packageName,
-                uiState.value.settings.launcherRenamedApps
+                persisted.launcherRenamedApps
             )
             snackbarMessageFlow.value = appContext.getString(
                 R.string.apps_detox_unlocked_snack,
                 appLabel
             )
+            syncEnforcementServiceLocked(perms, persisted)
         }
     }
 
@@ -353,17 +377,28 @@ class GuardViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun syncServiceWithPersistedState() {
         viewModelScope.launch {
+            repository.pruneExpiredDetoxLocks()
             val persisted = repository.getCurrentSettings()
             val perms = PermissionChecker.checkAll(appContext)
             permissionsFlow.value = perms
-            if (persisted.isGuardEnabled) {
-                if (perms.canArmGuard) {
-                    ScreenGuardService.start(appContext)
-                } else {
-                    repository.setGuardEnabled(false)
-                    ScreenGuardService.stop(appContext)
-                }
+            if (persisted.isGuardEnabled && !perms.canArmGuard) {
+                repository.setGuardEnabled(false)
+                ScreenGuardService.stop(appContext)
+            } else {
+                syncEnforcementServiceLocked(perms, persisted)
             }
+        }
+    }
+
+    private suspend fun syncEnforcementServiceLocked(
+        perms: PermissionSnapshot,
+        settings: GuardSettings? = null
+    ) {
+        val current = settings ?: repository.getCurrentSettings()
+        if (current.hasActiveEnforcement() && perms.canArmGuard) {
+            ScreenGuardService.start(appContext)
+        } else {
+            ScreenGuardService.stop(appContext)
         }
     }
 }

@@ -1,5 +1,10 @@
 package com.example.util
 
+data class RecentLauncherLaunch(
+    val packageName: String,
+    val launchedAtMillis: Long
+)
+
 object AppForegroundTracker {
     @Volatile
     var isMainActivityVisible: Boolean = false
@@ -14,10 +19,7 @@ object AppForegroundTracker {
         private set
 
     @Volatile
-    private var launchedPackage: String? = null
-
-    @Volatile
-    private var launchedAtMillis: Long = 0L
+    private var recentLaunch: RecentLauncherLaunch? = null
 
     fun setMainActivityVisible(visible: Boolean) {
         isMainActivityVisible = visible
@@ -31,19 +33,23 @@ object AppForegroundTracker {
         isOverlayActivityVisible = visible
     }
 
-    fun recordAppLaunchedFromLauncher(packageName: String) {
-        launchedPackage = packageName
-        launchedAtMillis = System.currentTimeMillis()
+    fun recordAppLaunchedFromLauncher(
+        packageName: String,
+        nowMillis: Long = System.currentTimeMillis()
+    ) {
+        recentLaunch = RecentLauncherLaunch(packageName, nowMillis)
     }
 
-    fun peekRecentLauncherLaunch(maxAgeMillis: Long = 3_000L): String? {
-        val pkg = launchedPackage ?: return null
-        return if (System.currentTimeMillis() - launchedAtMillis <= maxAgeMillis) pkg else null
+    fun peekRecentLauncherLaunch(
+        nowMillis: Long = System.currentTimeMillis(),
+        maxAgeMillis: Long = 3_000L
+    ): RecentLauncherLaunch? {
+        val current = recentLaunch ?: return null
+        return if (nowMillis - current.launchedAtMillis <= maxAgeMillis) current else null
     }
 
     fun clearRecentLauncherLaunch() {
-        launchedPackage = null
-        launchedAtMillis = 0L
+        recentLaunch = null
     }
 
     val isOwnUiVisible: Boolean

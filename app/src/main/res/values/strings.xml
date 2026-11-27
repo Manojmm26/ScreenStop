@@ -22,8 +22,8 @@
     <string name="guard_toggle_on">Active</string>
     <string name="guard_toggle_off">Off</string>
     <string name="guard_master_label">Usage Guard</string>
-    <string name="guard_master_hint_on">Monitors screen time, detox locks, and per-app prompts. Locking resets the timer.</string>
-    <string name="guard_master_hint_off">Turn on to enforce full-screen reminders, detox locks, and intention prompts.</string>
+    <string name="guard_master_hint_on">Monitors continuous screen time. Locking your phone resets the timer.</string>
+    <string name="guard_master_hint_off">Turn on for global screen-time reminders. Detox locks and app prompts still run automatically.</string>
     <string name="guard_interval_title">Reminder Interval</string>
     <string name="guard_interval_subtitle">Base time before full-screen takeover triggers</string>
     <string name="guard_interval_minutes_short">%1$dm</string>
@@ -160,7 +160,10 @@
     <string name="notif_channel_name">ScreenStop Active Guard</string>
     <string name="notif_channel_desc">Persistent indicator while ScreenStop is monitoring screen usage.</string>
     <string name="notif_title_monitoring">ScreenStop Armed</string>
+    <string name="notif_title_rules_active">ScreenStop Rules Active</string>
     <string name="notif_text_monitoring">Interval: %1$s · Elapsed %2$s · Lock screen to reset</string>
+    <string name="notif_text_rules_active">Enforcing %1$d detox lock(s) · %2$d prompted app(s)</string>
+    <string name="notif_text_session_active">%1$s session · Elapsed %2$s / %3$s</string>
     <string name="notif_text_paused_exception">Paused in exception app · Elapsed %1$s</string>
     <string name="notif_text_paused_in_app">Paused in ScreenStop · Elapsed %1$s</string>
     <string name="notif_text_screen_off">Screen locked · Timer reset to 00:00</string>

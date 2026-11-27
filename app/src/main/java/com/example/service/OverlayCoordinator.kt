@@ -8,9 +8,11 @@ import kotlinx.coroutines.flow.asStateFlow
 data class ActiveOverlayRequest(
     val id: Long = System.nanoTime(),
     val content: OverlayContent,
+    val launchHomeOnReturn: Boolean = true,
     val onTakeoverConfirmed: () -> Unit = {},
     val onDurationSelected: (Int) -> Unit = {},
-    val onReturnHome: () -> Unit = {}
+    val onReturnHome: () -> Unit = {},
+    val onAbandonedToBackground: () -> Unit = {}
 )
 
 object OverlayCoordinator {

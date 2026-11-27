@@ -55,6 +55,15 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".ui.takeover.OverlayActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleInstance"
+            android:taskAffinity=""
+            android:theme="@style/Theme.MyApplication"
+            android:windowSoftInputMode="adjustResize" />
+
         <service
             android:name=".service.ScreenGuardService"
             android:exported="false"

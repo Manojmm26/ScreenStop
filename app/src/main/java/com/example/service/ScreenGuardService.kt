@@ -12,6 +12,7 @@ import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
@@ -23,6 +24,8 @@ import com.example.data.GuardSettings
 import com.example.data.GuardSettingsRepository
 import com.example.data.GuardStatus
 import com.example.data.OverlayContent
+import com.example.ui.takeover.OverlayActivity
+import com.example.util.AppForegroundTracker
 import com.example.util.ForegroundAppDetector
 import com.example.util.PermissionChecker
 import kotlinx.coroutines.CoroutineScope
@@ -41,17 +44,12 @@ class ScreenGuardService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private lateinit var repository: GuardSettingsRepository
     private lateinit var foregroundDetector: ForegroundAppDetector
-    private lateinit var overlayController: TakeoverOverlayController
     private lateinit var notificationManager: NotificationManager
+
+    private val sessionTracker = GuardSessionTracker()
 
     @Volatile
     private var latestSettings: GuardSettings = GuardSettings()
-
-    @Volatile
-    private var elapsedSeconds: Int = 0
-
-    @Volatile
-    private var consecutiveOverrides: Int = 0
 
     @Volatile
     private var currentStatus: GuardStatus = GuardStatus.MONITORING
@@ -62,18 +60,17 @@ class ScreenGuardService : Service() {
     @Volatile
     private var isOverlayActive: Boolean = false
 
-    // Per-app "How Long?" session state
     @Volatile
-    private var activeSessionPackage: String? = null
+    private var overlayRequestedAtElapsedMs: Long = 0L
 
     @Volatile
-    private var activeSessionLabel: String? = null
+    private var activeOverlayPackage: String? = null
 
     @Volatile
-    private var activeSessionTargetSeconds: Int? = null
+    private var activeOverlayLabel: String? = null
 
     @Volatile
-    private var lastObservedPackage: String? = null
+    private var lastNotificationUpdateElapsedMs: Long = 0L
 
     private var settingsJob: Job? = null
     private var monitorJob: Job? = null
@@ -85,8 +82,13 @@ class ScreenGuardService : Service() {
                 Intent.ACTION_SCREEN_OFF -> handleScreenOffReset()
                 Intent.ACTION_USER_PRESENT, Intent.ACTION_SCREEN_ON -> {
                     if (foregroundDetector.isScreenUnlockedAndInteractive() && !isOverlayActive) {
-                        currentStatus = GuardStatus.MONITORING
-                        publishRuntimeState(null)
+                        sessionTracker.resetTickClock()
+                        currentStatus = if (latestSettings.isGuardEnabled) {
+                            GuardStatus.MONITORING
+                        } else {
+                            GuardStatus.DISARMED
+                        }
+                        publishRuntimeState(foregroundPkg = null, displayedSession = null)
                     }
                 }
             }
@@ -97,7 +99,6 @@ class ScreenGuardService : Service() {
         super.onCreate()
         repository = GuardSettingsRepository(applicationContext)
         foregroundDetector = ForegroundAppDetector(applicationContext)
-        overlayController = TakeoverOverlayController(applicationContext)
         notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
         createNotificationChannel()
@@ -119,8 +120,16 @@ class ScreenGuardService : Service() {
                 isPreviewMode = false
                 serviceScope.launch {
                     repository.setGuardEnabled(false)
+                    val refreshed = repository.getCurrentSettings()
+                    latestSettings = refreshed
                     withContext(Dispatchers.Main) {
-                        stopGuardAndSelf()
+                        if (!refreshed.hasActiveEnforcement()) {
+                            stopGuardAndSelf()
+                        } else {
+                            currentStatus = GuardStatus.DISARMED
+                            publishRuntimeState(foregroundPkg = null, displayedSession = null)
+                            updateNotification(force = true)
+                        }
                     }
                 }
                 return START_NOT_STICKY
@@ -132,7 +141,11 @@ class ScreenGuardService : Service() {
                 serviceScope.launch {
                     latestSettings = repository.getCurrentSettings()
                     withContext(Dispatchers.Main) {
-                        triggerTakeover(isPreview = true, appLabel = null)
+                        triggerTakeover(
+                            isPreview = true,
+                            sessionPackage = null,
+                            appLabel = null
+                        )
                     }
                 }
                 return START_NOT_STICKY
@@ -169,8 +182,8 @@ class ScreenGuardService : Service() {
         settingsJob?.cancel()
         monitorJob?.cancel()
         isPreviewMode = false
-        isOverlayActive = false
-        overlayController.dismiss()
+        clearActiveOverlayState(dismissCoordinator = true)
+        sessionTracker.resetOnScreenOff()
         if (receiverRegistered) {
             runCatching { unregisterReceiver(screenStateReceiver) }
             receiverRegistered = false
@@ -185,12 +198,16 @@ class ScreenGuardService : Service() {
         settingsJob = serviceScope.launch {
             repository.settingsFlow.collectLatest { settings ->
                 latestSettings = settings
-                if (!settings.isGuardEnabled && !isPreviewMode) {
+                if (!settings.hasActiveEnforcement() && !isPreviewMode) {
                     withContext(Dispatchers.Main) {
                         stopGuardAndSelf()
                     }
                 } else {
-                    publishRuntimeState(GuardRuntimeState.snapshot.value.currentForegroundPackage)
+                    publishRuntimeState(
+                        foregroundPkg = GuardRuntimeState.snapshot.value.currentForegroundPackage,
+                        displayedSession = null
+                    )
+                    updateNotification(force = true)
                 }
             }
         }
@@ -226,18 +243,11 @@ class ScreenGuardService : Service() {
     }
 
     private fun handleScreenOffReset() {
-        elapsedSeconds = 0
-        consecutiveOverrides = 0
-        activeSessionPackage = null
-        activeSessionLabel = null
-        activeSessionTargetSeconds = null
-        lastObservedPackage = null
-        isOverlayActive = false
+        sessionTracker.resetOnScreenOff()
+        clearActiveOverlayState(dismissCoordinator = true)
         foregroundDetector.clearCachedPackage()
-        if (overlayController.isShowing) {
-            overlayController.dismiss()
-        }
-        if (isPreviewMode && !latestSettings.isGuardEnabled) {
+
+        if (isPreviewMode && !latestSettings.hasActiveEnforcement()) {
             isPreviewMode = false
             stopGuardAndSelf()
             return
@@ -256,53 +266,65 @@ class ScreenGuardService : Service() {
                 activeTakeover = null
             )
         }
-        updateNotification()
+        updateNotification(force = true)
     }
 
     private fun ensureMonitoringLoop() {
         if (monitorJob?.isActive == true) return
+        sessionTracker.resetTickClock()
         monitorJob = serviceScope.launch {
             latestSettings = repository.getCurrentSettings()
             while (isActive) {
-                delay(1_000L)
-                tickOneSecond()
+                delay(POLL_INTERVAL_MS)
+                tick()
             }
         }
     }
 
-    private suspend fun tickOneSecond() {
+    private suspend fun tick() {
         val settings = latestSettings
-        if (!settings.isGuardEnabled && !isPreviewMode) {
+        val nowEpochMs = System.currentTimeMillis()
+        val nowElapsedMs = SystemClock.elapsedRealtime()
+
+        if (!settings.hasActiveEnforcement(nowEpochMs) && !isPreviewMode) {
             withContext(Dispatchers.Main) { stopGuardAndSelf() }
             return
         }
 
         if (!foregroundDetector.isScreenUnlockedAndInteractive()) {
-            if (elapsedSeconds != 0 || consecutiveOverrides != 0 || isOverlayActive || currentStatus != GuardStatus.SCREEN_OFF) {
+            if (sessionTracker.getGlobalElapsedSeconds() != 0 ||
+                sessionTracker.getConsecutiveOverrides() != 0 ||
+                isOverlayActive ||
+                currentStatus != GuardStatus.SCREEN_OFF
+            ) {
                 withContext(Dispatchers.Main) { handleScreenOffReset() }
             }
             return
         }
 
-        if (isOverlayActive || overlayController.isShowing) {
-            publishRuntimeState(GuardRuntimeState.snapshot.value.currentForegroundPackage)
-            return
+        // Watchdog: if an overlay was requested or active, wait while it's genuinely visible;
+        // recover automatically if the Activity failed to open or was unexpectedly dismissed.
+        if (isOverlayActive) {
+            val coordinatorHasRequest = OverlayCoordinator.activeRequest.value != null
+            val overlayVisible = AppForegroundTracker.isOverlayActivityVisible
+            val launchAgeMs = nowElapsedMs - overlayRequestedAtElapsedMs
+
+            if (overlayVisible || (coordinatorHasRequest && launchAgeMs < OVERLAY_LAUNCH_WATCHDOG_MS)) {
+                sessionTracker.resetTickClock()
+                return
+            }
+
+            // Stale overlay state detected — self-heal so enforcement never freezes!
+            clearActiveOverlayState(dismissCoordinator = true)
         }
 
+        val deltaMillis = sessionTracker.consumeDeltaMillis(nowElapsedMs)
         val foregroundPkg = foregroundDetector.getCurrentForegroundPackage()
-        val now = System.currentTimeMillis()
 
-        // If user switched away from an active per-app session, clear that session cleanly.
-        if (activeSessionPackage != null && foregroundPkg != null && foregroundPkg != activeSessionPackage) {
-            activeSessionPackage = null
-            activeSessionLabel = null
-            activeSessionTargetSeconds = null
-        }
-
-        // Priority 1: Timed Detox Lock — immediately hard-block without override.
+        // Priority 1: Timed Detox Lock — immediately hard-block without word override.
         if (foregroundPkg != null && foregroundPkg != packageName) {
             val blockedUntil = settings.blockedAppsUntilMillis[foregroundPkg]
-            if (blockedUntil != null && blockedUntil > now) {
+            if (blockedUntil != null && blockedUntil > nowEpochMs) {
                 val appLabel = PermissionChecker.resolveAppLabel(
                     applicationContext,
                     foregroundPkg,
@@ -315,215 +337,256 @@ class ScreenGuardService : Service() {
             }
         }
 
-        // Priority 2: Per-App "How Long?" Prompt on entering a prompted app without a granted session.
+        // Priority 2: Per-App "How Long?" Prompt & Persistent Per-App Session Countdown
+        // (Works even when the main global Guard switch is OFF!)
         if (foregroundPkg != null &&
             foregroundPkg != packageName &&
-            foregroundPkg in settings.promptedPackages &&
-            activeSessionPackage != foregroundPkg &&
-            lastObservedPackage != foregroundPkg
+            foregroundPkg in settings.promptedPackages
         ) {
-            lastObservedPackage = foregroundPkg
-            val appLabel = PermissionChecker.resolveAppLabel(
-                applicationContext,
-                foregroundPkg,
-                settings.launcherRenamedApps
-            )
-            withContext(Dispatchers.Main) {
-                triggerHowLongPrompt(foregroundPkg, appLabel, isPreview = false)
+            val existingSession = sessionTracker.getSession(foregroundPkg)
+            if (existingSession == null) {
+                val appLabel = PermissionChecker.resolveAppLabel(
+                    applicationContext,
+                    foregroundPkg,
+                    settings.launcherRenamedApps
+                )
+                withContext(Dispatchers.Main) {
+                    triggerHowLongPrompt(foregroundPkg, appLabel, isPreview = false)
+                }
+                return
+            }
+
+            // Resume & advance this app's persistent session timer using real monotonic time.
+            val updatedSession = sessionTracker.advanceSession(foregroundPkg, deltaMillis) ?: existingSession
+            currentStatus = GuardStatus.MONITORING
+            if (updatedSession.isExpired) {
+                withContext(Dispatchers.Main) {
+                    triggerTakeover(
+                        isPreview = false,
+                        sessionPackage = updatedSession.packageName,
+                        appLabel = updatedSession.appLabel
+                    )
+                }
+            } else {
+                publishRuntimeState(foregroundPkg = foregroundPkg, displayedSession = updatedSession)
+                updateNotification(force = false, displayedSession = updatedSession)
             }
             return
         }
-        if (foregroundPkg != null) {
-            lastObservedPackage = foregroundPkg
+
+        // Priority 3: Global Usage Guard Countdown (only when master Usage Guard switch is ON)
+        if (!settings.isGuardEnabled) {
+            currentStatus = GuardStatus.DISARMED
+            publishRuntimeState(foregroundPkg = foregroundPkg, displayedSession = null)
+            updateNotification(force = false)
+            return
         }
 
-        val targetSeconds = currentTargetSeconds(settings)
-
-        // Priority 3: Exception Apps / ScreenStop self-pause / Standard & Escalated Usage Countdown
         when {
             foregroundPkg == packageName -> {
                 currentStatus = GuardStatus.PAUSED_IN_APP
-                publishRuntimeState(foregroundPkg)
+                publishRuntimeState(foregroundPkg = foregroundPkg, displayedSession = null)
+                updateNotification(force = false)
             }
 
             foregroundPkg != null && foregroundPkg in settings.exceptionPackages -> {
                 currentStatus = GuardStatus.PAUSED_EXCEPTION
-                publishRuntimeState(foregroundPkg)
+                publishRuntimeState(foregroundPkg = foregroundPkg, displayedSession = null)
+                updateNotification(force = false)
             }
 
             else -> {
                 currentStatus = GuardStatus.MONITORING
-                elapsedSeconds += 1
-                if (elapsedSeconds >= targetSeconds) {
-                    val sessionAppLabel = activeSessionLabel
+                val elapsedSec = sessionTracker.advanceGlobal(deltaMillis)
+                val targetSec = globalTargetSeconds(settings)
+                if (elapsedSec >= targetSec) {
                     withContext(Dispatchers.Main) {
-                        triggerTakeover(isPreview = false, appLabel = sessionAppLabel)
+                        triggerTakeover(
+                            isPreview = false,
+                            sessionPackage = null,
+                            appLabel = null
+                        )
                     }
                 } else {
-                    publishRuntimeState(foregroundPkg)
+                    publishRuntimeState(foregroundPkg = foregroundPkg, displayedSession = null)
+                    updateNotification(force = false)
                 }
             }
         }
-
-        if (elapsedSeconds % 2 == 0 || currentStatus != GuardStatus.MONITORING) {
-            updateNotification()
-        }
     }
 
-    private fun currentTargetSeconds(settings: GuardSettings): Int {
-        val customSessionTarget = activeSessionTargetSeconds
-        if (activeSessionPackage != null && customSessionTarget != null) {
-            return customSessionTarget
-        }
+    private fun globalTargetSeconds(settings: GuardSettings): Int {
         return GuardDefaults.effectiveIntervalSeconds(
             baseMinutes = settings.intervalMinutes,
-            consecutiveOverrides = consecutiveOverrides,
+            consecutiveOverrides = sessionTracker.getConsecutiveOverrides(),
             escalatingEnabled = settings.escalatingFrictionEnabled
         )
     }
 
     private fun triggerDetoxBlocked(pkg: String, appLabel: String, blockedUntilMillis: Long) {
         if (!PermissionChecker.hasOverlayPermission(applicationContext)) return
-        isOverlayActive = true
-        currentStatus = GuardStatus.DETOX_BLOCKED
-        publishRuntimeState(pkg)
-        updateNotification()
 
-        overlayController.show(
+        markOverlayLaunching(pkg, appLabel, GuardStatus.DETOX_BLOCKED)
+        publishRuntimeState(foregroundPkg = pkg, displayedSession = null)
+        updateNotification(force = true)
+
+        val request = ActiveOverlayRequest(
             content = OverlayContent.DetoxBlocked(
                 packageName = pkg,
                 appLabel = appLabel,
                 blockedUntilMillis = blockedUntilMillis
             ),
+            launchHomeOnReturn = true,
             onReturnHome = {
-                isOverlayActive = false
-                lastObservedPackage = null
-                foregroundDetector.clearCachedPackage()
-                PermissionChecker.launchHomeScreen(applicationContext)
-                currentStatus = if (latestSettings.isGuardEnabled) GuardStatus.MONITORING else GuardStatus.DISARMED
-                publishRuntimeState(null)
-                updateNotification()
-            },
-            onShowFailed = {
-                isOverlayActive = false
-                currentStatus = GuardStatus.MONITORING
-                publishRuntimeState(null)
+                foregroundDetector.markReturnedHomeFrom(pkg)
+                clearActiveOverlayState(dismissCoordinator = false)
+                sessionTracker.resetTickClock()
+                currentStatus = if (latestSettings.isGuardEnabled) {
+                    GuardStatus.MONITORING
+                } else {
+                    GuardStatus.DISARMED
+                }
+                publishRuntimeState(foregroundPkg = null, displayedSession = null)
+                updateNotification(force = true)
             }
         )
+        launchOverlayActivity(request)
     }
 
     private fun triggerHowLongPrompt(pkg: String, appLabel: String, isPreview: Boolean) {
         if (!PermissionChecker.hasOverlayPermission(applicationContext)) {
             isPreviewMode = false
-            isOverlayActive = false
-            if (!latestSettings.isGuardEnabled) stopGuardAndSelf()
+            clearActiveOverlayState(dismissCoordinator = true)
+            if (!latestSettings.hasActiveEnforcement()) stopGuardAndSelf()
             return
         }
-        isOverlayActive = true
-        currentStatus = GuardStatus.AWAITING_SESSION_PROMPT
-        publishRuntimeState(pkg)
-        updateNotification()
 
-        overlayController.show(
+        markOverlayLaunching(pkg, appLabel, GuardStatus.AWAITING_SESSION_PROMPT)
+        publishRuntimeState(foregroundPkg = pkg, displayedSession = null)
+        updateNotification(force = true)
+
+        val request = ActiveOverlayRequest(
             content = OverlayContent.HowLongPrompt(
                 packageName = pkg,
                 appLabel = appLabel,
                 isPreview = isPreview
             ),
+            launchHomeOnReturn = !isPreview,
             onDurationSelected = { chosenMinutes ->
-                isOverlayActive = false
+                clearActiveOverlayState(dismissCoordinator = false)
                 isPreviewMode = false
-                if (!isPreview) {
-                    activeSessionPackage = pkg
-                    activeSessionLabel = appLabel
-                    activeSessionTargetSeconds = chosenMinutes * 60
-                    elapsedSeconds = 0
+                sessionTracker.resetTickClock()
+                val createdSession = if (!isPreview) {
+                    sessionTracker.startOrReplaceSession(
+                        packageName = pkg,
+                        appLabel = appLabel,
+                        targetSeconds = chosenMinutes * 60
+                    )
+                } else {
+                    null
                 }
-                currentStatus = if (latestSettings.isGuardEnabled) GuardStatus.MONITORING else GuardStatus.DISARMED
-                publishRuntimeState(if (isPreview) null else pkg)
-                if (!latestSettings.isGuardEnabled) {
+                currentStatus = if (latestSettings.isGuardEnabled || createdSession != null) {
+                    GuardStatus.MONITORING
+                } else {
+                    GuardStatus.DISARMED
+                }
+                publishRuntimeState(
+                    foregroundPkg = if (isPreview) null else pkg,
+                    displayedSession = createdSession
+                )
+                if (!latestSettings.hasActiveEnforcement()) {
                     stopGuardAndSelf()
                 } else {
-                    updateNotification()
+                    updateNotification(force = true, displayedSession = createdSession)
                 }
             },
             onReturnHome = {
-                isOverlayActive = false
-                isPreviewMode = false
-                lastObservedPackage = null
-                foregroundDetector.clearCachedPackage()
                 if (!isPreview) {
-                    PermissionChecker.launchHomeScreen(applicationContext)
+                    foregroundDetector.markReturnedHomeFrom(pkg)
                 }
-                currentStatus = if (latestSettings.isGuardEnabled) GuardStatus.MONITORING else GuardStatus.DISARMED
-                publishRuntimeState(null)
-                if (!latestSettings.isGuardEnabled) {
-                    stopGuardAndSelf()
-                } else {
-                    updateNotification()
-                }
-            },
-            onShowFailed = {
-                isOverlayActive = false
+                clearActiveOverlayState(dismissCoordinator = false)
                 isPreviewMode = false
-                if (!latestSettings.isGuardEnabled) {
+                sessionTracker.resetTickClock()
+                currentStatus = if (latestSettings.isGuardEnabled) {
+                    GuardStatus.MONITORING
+                } else {
+                    GuardStatus.DISARMED
+                }
+                publishRuntimeState(foregroundPkg = null, displayedSession = null)
+                if (!latestSettings.hasActiveEnforcement()) {
                     stopGuardAndSelf()
                 } else {
-                    currentStatus = GuardStatus.MONITORING
-                    publishRuntimeState(null)
+                    updateNotification(force = true)
                 }
             }
         )
+        launchOverlayActivity(request)
     }
 
-    private fun triggerTakeover(isPreview: Boolean, appLabel: String?) {
+    private fun triggerTakeover(
+        isPreview: Boolean,
+        sessionPackage: String?,
+        appLabel: String?
+    ) {
         if (!PermissionChecker.hasOverlayPermission(applicationContext)) {
             isPreviewMode = false
-            isOverlayActive = false
-            elapsedSeconds = 0
-            if (!latestSettings.isGuardEnabled) {
+            clearActiveOverlayState(dismissCoordinator = true)
+            if (!latestSettings.hasActiveEnforcement()) {
                 stopGuardAndSelf()
             } else {
-                publishRuntimeState(null)
+                publishRuntimeState(foregroundPkg = null, displayedSession = null)
             }
             return
         }
 
+        val overrides = sessionTracker.getConsecutiveOverrides()
         val session = GuardRuntimeState.createSession(
             messages = latestSettings.reminderMessages,
-            consecutiveOverrides = if (isPreview) consecutiveOverrides else consecutiveOverrides,
+            consecutiveOverrides = overrides,
             escalatingEnabled = latestSettings.escalatingFrictionEnabled,
             appLabel = appLabel,
             isPreview = isPreview
         )
-        isOverlayActive = true
-        currentStatus = GuardStatus.TAKEOVER_ACTIVE
-        val currentTarget = currentTargetSeconds(latestSettings)
+
+        markOverlayLaunching(sessionPackage, appLabel, GuardStatus.TAKEOVER_ACTIVE)
+        val activeAppSession = sessionPackage?.let { sessionTracker.getSession(it) }
+        val displayedTarget = activeAppSession?.targetSeconds ?: globalTargetSeconds(latestSettings)
+        val displayedElapsed = if (isPreview) {
+            sessionTracker.getGlobalElapsedSeconds()
+        } else {
+            displayedTarget
+        }
+
         GuardRuntimeState.update {
             it.copy(
                 status = GuardStatus.TAKEOVER_ACTIVE,
-                elapsedSeconds = if (isPreview) elapsedSeconds else currentTarget,
-                targetSeconds = currentTarget,
-                consecutiveOverrides = consecutiveOverrides,
+                elapsedSeconds = displayedElapsed,
+                targetSeconds = displayedTarget,
+                consecutiveOverrides = overrides,
+                activeSessionPackage = activeAppSession?.packageName,
+                activeSessionLabel = activeAppSession?.appLabel,
                 activeTakeover = session
             )
         }
-        updateNotification()
+        updateNotification(force = true)
 
-        overlayController.show(
+        val request = ActiveOverlayRequest(
             content = OverlayContent.Takeover(session),
+            launchHomeOnReturn = false,
             onTakeoverConfirmed = {
-                isOverlayActive = false
+                clearActiveOverlayState(dismissCoordinator = false)
                 isPreviewMode = false
+                sessionTracker.resetTickClock()
                 if (!isPreview) {
-                    elapsedSeconds = 0
-                    if (latestSettings.escalatingFrictionEnabled) {
-                        consecutiveOverrides += 1
-                    }
-                    // Reset per-app custom target after a takeover so escalating global friction takes over
-                    activeSessionTargetSeconds = null
+                    sessionTracker.recordTakeoverOverride(
+                        forSessionPackage = sessionPackage,
+                        forSessionLabel = appLabel,
+                        baseIntervalMinutes = latestSettings.intervalMinutes,
+                        escalatingEnabled = latestSettings.escalatingFrictionEnabled
+                    )
                 }
-                currentStatus = if (latestSettings.isGuardEnabled) {
+                val nextSession = sessionPackage?.let { sessionTracker.getSession(it) }
+                currentStatus = if (latestSettings.isGuardEnabled || nextSession != null) {
                     GuardStatus.MONITORING
                 } else {
                     GuardStatus.DISARMED
@@ -531,42 +594,102 @@ class ScreenGuardService : Service() {
                 GuardRuntimeState.update {
                     it.copy(
                         status = currentStatus,
-                        elapsedSeconds = elapsedSeconds,
-                        targetSeconds = currentTargetSeconds(latestSettings),
-                        consecutiveOverrides = consecutiveOverrides,
+                        elapsedSeconds = nextSession?.elapsedSeconds ?: sessionTracker.getGlobalElapsedSeconds(),
+                        targetSeconds = nextSession?.targetSeconds ?: globalTargetSeconds(latestSettings),
+                        consecutiveOverrides = sessionTracker.getConsecutiveOverrides(),
+                        activeSessionPackage = nextSession?.packageName,
+                        activeSessionLabel = nextSession?.appLabel,
                         activeTakeover = null
                     )
                 }
-                if (!latestSettings.isGuardEnabled) {
+                if (!latestSettings.hasActiveEnforcement()) {
                     stopGuardAndSelf()
                 } else {
-                    updateNotification()
+                    updateNotification(force = true, displayedSession = nextSession)
                 }
             },
-            onShowFailed = {
-                isOverlayActive = false
+            onAbandonedToBackground = {
+                // User pressed Home without typing the challenge word.
+                // Keep elapsed time intact so reopening a non-exempt app immediately re-enforces.
+                clearActiveOverlayState(dismissCoordinator = false)
                 isPreviewMode = false
-                if (!latestSettings.isGuardEnabled) {
+                sessionTracker.resetTickClock()
+                currentStatus = if (latestSettings.isGuardEnabled) {
+                    GuardStatus.MONITORING
+                } else {
+                    GuardStatus.DISARMED
+                }
+                GuardRuntimeState.update { it.copy(status = currentStatus, activeTakeover = null) }
+                if (!latestSettings.hasActiveEnforcement()) {
                     stopGuardAndSelf()
                 } else {
-                    currentStatus = GuardStatus.MONITORING
-                    publishRuntimeState(null)
-                    updateNotification()
+                    updateNotification(force = true)
                 }
             }
         )
+        launchOverlayActivity(request)
     }
 
-    private fun publishRuntimeState(foregroundPkg: String?) {
+    private fun markOverlayLaunching(pkg: String?, label: String?, status: GuardStatus) {
+        isOverlayActive = true
+        overlayRequestedAtElapsedMs = SystemClock.elapsedRealtime()
+        activeOverlayPackage = pkg
+        activeOverlayLabel = label
+        currentStatus = status
+    }
+
+    private fun clearActiveOverlayState(dismissCoordinator: Boolean) {
+        isOverlayActive = false
+        overlayRequestedAtElapsedMs = 0L
+        activeOverlayPackage = null
+        activeOverlayLabel = null
+        if (dismissCoordinator) {
+            OverlayCoordinator.clear()
+        }
+    }
+
+    private fun launchOverlayActivity(request: ActiveOverlayRequest) {
+        OverlayCoordinator.publish(request)
+        val intent = Intent(applicationContext, OverlayActivity::class.java).apply {
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_NO_ANIMATION or
+                    Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
+            )
+        }
+        runCatching {
+            startActivity(intent)
+        }.onFailure {
+            clearActiveOverlayState(dismissCoordinator = true)
+            isPreviewMode = false
+            currentStatus = if (latestSettings.isGuardEnabled) {
+                GuardStatus.MONITORING
+            } else {
+                GuardStatus.DISARMED
+            }
+            GuardRuntimeState.update { it.copy(status = currentStatus, activeTakeover = null) }
+            if (!latestSettings.hasActiveEnforcement()) {
+                stopGuardAndSelf()
+            }
+        }
+    }
+
+    private fun publishRuntimeState(
+        foregroundPkg: String?,
+        displayedSession: ActiveAppSession?
+    ) {
+        val elapsed = displayedSession?.elapsedSeconds ?: sessionTracker.getGlobalElapsedSeconds()
+        val target = displayedSession?.targetSeconds ?: globalTargetSeconds(latestSettings)
         GuardRuntimeState.update {
             it.copy(
                 status = currentStatus,
-                elapsedSeconds = elapsedSeconds,
-                targetSeconds = currentTargetSeconds(latestSettings),
-                consecutiveOverrides = consecutiveOverrides,
+                elapsedSeconds = elapsed,
+                targetSeconds = target,
+                consecutiveOverrides = sessionTracker.getConsecutiveOverrides(),
                 currentForegroundPackage = foregroundPkg,
-                activeSessionPackage = activeSessionPackage,
-                activeSessionLabel = activeSessionLabel
+                activeSessionPackage = displayedSession?.packageName,
+                activeSessionLabel = displayedSession?.appLabel,
+                activeTakeover = if (currentStatus == GuardStatus.TAKEOVER_ACTIVE) it.activeTakeover else null
             )
         }
     }
@@ -574,15 +697,10 @@ class ScreenGuardService : Service() {
     private fun stopGuardAndSelf() {
         monitorJob?.cancel()
         monitorJob = null
-        isOverlayActive = false
         isPreviewMode = false
-        overlayController.dismiss()
-        elapsedSeconds = 0
-        consecutiveOverrides = 0
-        activeSessionPackage = null
-        activeSessionLabel = null
-        activeSessionTargetSeconds = null
-        lastObservedPackage = null
+        clearActiveOverlayState(dismissCoordinator = true)
+        sessionTracker.resetOnScreenOff()
+        foregroundDetector.clearCachedPackage()
         currentStatus = GuardStatus.DISARMED
         GuardRuntimeState.resetToDisarmed(latestSettings.intervalMinutes)
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
@@ -603,13 +721,21 @@ class ScreenGuardService : Service() {
         }
     }
 
-    private fun updateNotification() {
+    private fun updateNotification(
+        force: Boolean = false,
+        displayedSession: ActiveAppSession? = null
+    ) {
+        val nowElapsed = SystemClock.elapsedRealtime()
+        if (!force && nowElapsed - lastNotificationUpdateElapsedMs < 2_000L) {
+            return
+        }
+        lastNotificationUpdateElapsedMs = nowElapsed
         if (PermissionChecker.hasNotificationPermission(applicationContext)) {
-            notificationManager.notify(NOTIFICATION_ID, buildNotification())
+            notificationManager.notify(NOTIFICATION_ID, buildNotification(displayedSession))
         }
     }
 
-    private fun buildNotification(): Notification {
+    private fun buildNotification(displayedSession: ActiveAppSession? = null): Notification {
         val openAppIntent = PendingIntent.getActivity(
             this,
             0,
@@ -617,22 +743,38 @@ class ScreenGuardService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val disarmIntent = PendingIntent.getService(
-            this,
-            1,
-            Intent(this, ScreenGuardService::class.java).setAction(ACTION_DISARM),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
+        val settings = latestSettings
+        val elapsedSeconds = displayedSession?.elapsedSeconds ?: sessionTracker.getGlobalElapsedSeconds()
+        val targetSeconds = displayedSession?.targetSeconds ?: globalTargetSeconds(settings)
         val elapsedFormatted = GuardDefaults.formatDuration(elapsedSeconds)
-        val targetFormatted = GuardDefaults.formatDuration(currentTargetSeconds(latestSettings))
-        val bodyText = when (currentStatus) {
-            GuardStatus.PAUSED_EXCEPTION -> getString(R.string.notif_text_paused_exception, elapsedFormatted)
-            GuardStatus.PAUSED_IN_APP -> getString(R.string.notif_text_paused_in_app, elapsedFormatted)
-            GuardStatus.SCREEN_OFF -> getString(R.string.notif_text_screen_off)
-            GuardStatus.TAKEOVER_ACTIVE -> getString(R.string.notif_text_takeover)
-            GuardStatus.DETOX_BLOCKED -> getString(R.string.notif_text_detox)
-            GuardStatus.AWAITING_SESSION_PROMPT -> getString(R.string.notif_text_prompt)
+        val targetFormatted = GuardDefaults.formatDuration(targetSeconds)
+
+        val title = if (settings.isGuardEnabled) {
+            getString(R.string.notif_title_monitoring)
+        } else {
+            getString(R.string.notif_title_rules_active)
+        }
+
+        val bodyText = when {
+            currentStatus == GuardStatus.SCREEN_OFF -> getString(R.string.notif_text_screen_off)
+            currentStatus == GuardStatus.TAKEOVER_ACTIVE -> getString(R.string.notif_text_takeover)
+            currentStatus == GuardStatus.DETOX_BLOCKED -> getString(R.string.notif_text_detox)
+            currentStatus == GuardStatus.AWAITING_SESSION_PROMPT -> getString(R.string.notif_text_prompt)
+            displayedSession != null -> getString(
+                R.string.notif_text_session_active,
+                displayedSession.appLabel,
+                elapsedFormatted,
+                targetFormatted
+            )
+            !settings.isGuardEnabled -> getString(
+                R.string.notif_text_rules_active,
+                settings.activeBlockedApps().size,
+                settings.promptedPackages.size
+            )
+            currentStatus == GuardStatus.PAUSED_EXCEPTION ->
+                getString(R.string.notif_text_paused_exception, elapsedFormatted)
+            currentStatus == GuardStatus.PAUSED_IN_APP ->
+                getString(R.string.notif_text_paused_in_app, elapsedFormatted)
             else -> getString(
                 R.string.notif_text_monitoring,
                 targetFormatted,
@@ -640,22 +782,34 @@ class ScreenGuardService : Service() {
             )
         }
 
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_screenstop)
-            .setContentTitle(getString(R.string.notif_title_monitoring))
+            .setContentTitle(title)
             .setContentText(bodyText)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setSilent(true)
             .setContentIntent(openAppIntent)
-            .addAction(0, getString(R.string.notif_action_disarm), disarmIntent)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
-            .build()
+
+        if (settings.isGuardEnabled) {
+            val disarmIntent = PendingIntent.getService(
+                this,
+                1,
+                Intent(this, ScreenGuardService::class.java).setAction(ACTION_DISARM),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            builder.addAction(0, getString(R.string.notif_action_disarm), disarmIntent)
+        }
+
+        return builder.build()
     }
 
     companion object {
         private const val CHANNEL_ID = "screenstop_guard_channel"
         private const val NOTIFICATION_ID = 4107
+        private const val POLL_INTERVAL_MS = 500L
+        private const val OVERLAY_LAUNCH_WATCHDOG_MS = 2_500L
 
         const val ACTION_START = "com.example.action.START_GUARD"
         const val ACTION_STOP = "com.example.action.STOP_GUARD"

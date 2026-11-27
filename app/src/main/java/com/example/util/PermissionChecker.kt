@@ -56,7 +56,7 @@ object PermissionChecker {
             val now = System.currentTimeMillis()
             val stats = usageStatsManager?.queryUsageStats(
                 UsageStatsManager.INTERVAL_DAILY,
-                now - 60_000L,
+                now - 24L * 60L * 60_000L,
                 now
             )
             return !stats.isNullOrEmpty()
@@ -101,12 +101,15 @@ object PermissionChecker {
         }
     }
 
-    fun launchHomeScreen(context: Context) {
-        val homeIntent = Intent(Intent.ACTION_MAIN).apply {
+    fun createHomeIntent(): Intent {
+        return Intent(Intent.ACTION_MAIN).apply {
             addCategory(Intent.CATEGORY_HOME)
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
         }
-        runCatching { context.startActivity(homeIntent) }
+    }
+
+    fun launchHomeScreen(context: Context) {
+        runCatching { context.startActivity(createHomeIntent()) }
     }
 
     fun resolveAppLabel(

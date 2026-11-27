@@ -11,6 +11,7 @@ import androidx.activity.viewModels
 import com.example.MainActivity
 import com.example.ui.GuardViewModel
 import com.example.ui.theme.ScreenStopTheme
+import com.example.util.AppForegroundTracker
 
 class MinimalistLauncherActivity : ComponentActivity() {
 
@@ -30,6 +31,7 @@ class MinimalistLauncherActivity : ComponentActivity() {
                         val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
                             ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                         if (launchIntent != null) {
+                            AppForegroundTracker.recordAppLaunchedFromLauncher(packageName)
                             runCatching { startActivity(launchIntent) }
                         }
                     },
@@ -43,9 +45,19 @@ class MinimalistLauncherActivity : ComponentActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        AppForegroundTracker.setLauncherActivityVisible(true)
+    }
+
     override fun onResume() {
         super.onResume()
         viewModel.refreshPermissions()
         viewModel.refreshInstalledApps()
+    }
+
+    override fun onStop() {
+        AppForegroundTracker.setLauncherActivityVisible(false)
+        super.onStop()
     }
 }
