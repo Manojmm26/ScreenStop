@@ -14,6 +14,22 @@ enum class GuardStatus {
     AWAITING_SESSION_PROMPT
 }
 
+enum class DistractingCategory(
+    val storageKey: String,
+    val displayName: String
+) {
+    SOCIAL("social", "Social"),
+    VIDEO("video", "Video"),
+    GAMES("games", "Games"),
+    NEWS("news", "News"),
+    SHOPPING("shopping", "Shopping");
+
+    companion object {
+        fun fromStorageKey(key: String): DistractingCategory? =
+            entries.firstOrNull { it.storageKey == key }
+    }
+}
+
 data class GuardSettings(
     val isGuardEnabled: Boolean = false,
     val intervalMinutes: Int = GuardDefaults.DEFAULT_INTERVAL_MINUTES,
@@ -25,7 +41,12 @@ data class GuardSettings(
     val launcherFavoritePackages: List<String> = emptyList(),
     val launcherHiddenPackages: Set<String> = emptySet(),
     val launcherRenamedApps: Map<String, String> = emptyMap(),
-    val showGuardStatusOnHome: Boolean = true
+    val showGuardStatusOnHome: Boolean = true,
+    val homeFocusMantra: String = GuardDefaults.DEFAULT_HOME_FOCUS_MANTRA,
+    val deepWorkUntilMillis: Long = 0L,
+    val deepWorkCategories: Set<DistractingCategory> = GuardDefaults.DEFAULT_DEEP_WORK_CATEGORIES,
+    val deepWorkStrictAllNonExempt: Boolean = false,
+    val deepWorkSavedInterruptionFilter: Int = -1
 ) {
     fun activeBlockedApps(nowMillis: Long = System.currentTimeMillis()): Map<String, Long> {
         return blockedAppsUntilMillis.filterValues { it > nowMillis }
@@ -36,8 +57,26 @@ data class GuardSettings(
         return until > nowMillis
     }
 
+    fun isDeepWorkActive(nowMillis: Long = System.currentTimeMillis()): Boolean {
+        return deepWorkUntilMillis > nowMillis
+    }
+
+    fun isRestrictedByDeepWork(
+        packageName: String,
+        category: DistractingCategory?,
+        nowMillis: Long = System.currentTimeMillis()
+    ): Boolean {
+        if (!isDeepWorkActive(nowMillis)) return false
+        if (packageName in exceptionPackages) return false
+        if (deepWorkStrictAllNonExempt) return true
+        return category != null && category in deepWorkCategories
+    }
+
     fun hasActiveEnforcement(nowMillis: Long = System.currentTimeMillis()): Boolean {
-        return isGuardEnabled || activeBlockedApps(nowMillis).isNotEmpty() || promptedPackages.isNotEmpty()
+        return isGuardEnabled ||
+            activeBlockedApps(nowMillis).isNotEmpty() ||
+            promptedPackages.isNotEmpty() ||
+            isDeepWorkActive(nowMillis)
     }
 }
 
@@ -60,7 +99,9 @@ sealed interface OverlayContent {
     data class DetoxBlocked(
         val packageName: String,
         val appLabel: String,
-        val blockedUntilMillis: Long
+        val blockedUntilMillis: Long,
+        val isDeepWork: Boolean = false,
+        val categoryLabel: String? = null
     ) : OverlayContent
 
     data class HowLongPrompt(
@@ -84,7 +125,8 @@ data class GuardRuntimeSnapshot(
 data class PermissionSnapshot(
     val hasOverlayPermission: Boolean = false,
     val hasUsageStatsPermission: Boolean = false,
-    val hasNotificationPermission: Boolean = true
+    val hasNotificationPermission: Boolean = true,
+    val hasDndAccess: Boolean = false
 ) {
     val canArmGuard: Boolean
         get() = hasOverlayPermission && hasUsageStatsPermission
@@ -101,13 +143,29 @@ data class InstalledAppInfo(
     val blockedUntilMillis: Long? = null,
     val isPrompted: Boolean = false,
     val isPinnedFavorite: Boolean = false,
-    val isHiddenInLauncher: Boolean = false
+    val isHiddenInLauncher: Boolean = false,
+    val todayUsageMinutes: Int = 0,
+    val category: DistractingCategory? = null
 ) {
     val displayLabel: String
         get() = customLabel?.takeIf { it.isNotBlank() } ?: label
 
+    val shouldShowDailyUsage: Boolean
+        get() = todayUsageMinutes >= GuardDefaults.DAILY_USAGE_BADGE_THRESHOLD_MINUTES
+
     fun isDetoxLocked(nowMillis: Long = System.currentTimeMillis()): Boolean {
         return (blockedUntilMillis ?: 0L) > nowMillis
+    }
+
+    fun isRestrictedByDeepWork(
+        settings: GuardSettings,
+        nowMillis: Long = System.currentTimeMillis()
+    ): Boolean {
+        return settings.isRestrictedByDeepWork(
+            packageName = packageName,
+            category = category,
+            nowMillis = nowMillis
+        )
     }
 }
 
@@ -120,8 +178,9 @@ object GuardDefaults {
     const val DEFAULT_INTERVAL_MINUTES = 3
     const val MIN_INTERVAL_MINUTES = 1
     const val MAX_INTERVAL_MINUTES = 60
-    const val MAX_LAUNCHER_FAVORITES = 7
     const val MIN_ESCALATED_INTERVAL_SECONDS = 30
+    const val DAILY_USAGE_BADGE_THRESHOLD_MINUTES = 5
+    const val DEFAULT_HOME_FOCUS_MANTRA = "Protect your attention.\nDo the one thing that matters most today."
 
     val PRESET_INTERVALS = listOf(1, 3, 5, 10, 15)
     val SESSION_PROMPT_OPTIONS_MINUTES = listOf(1, 3, 5, 10, 15)
@@ -132,6 +191,21 @@ object GuardDefaults {
         DetoxDurationPreset("6h", 6L * 60L * 60_000L),
         DetoxDurationPreset("24h", 24L * 60L * 60_000L),
         DetoxDurationPreset("3d", 3L * 24L * 60L * 60_000L)
+    )
+
+    val DEEP_WORK_DURATION_PRESETS = listOf(
+        DetoxDurationPreset("25m", 25L * 60_000L),
+        DetoxDurationPreset("45m", 45L * 60_000L),
+        DetoxDurationPreset("1h", 60L * 60_000L),
+        DetoxDurationPreset("2h", 2L * 60L * 60_000L),
+        DetoxDurationPreset("4h", 4L * 60L * 60_000L)
+    )
+
+    val DEFAULT_DEEP_WORK_CATEGORIES = setOf(
+        DistractingCategory.SOCIAL,
+        DistractingCategory.VIDEO,
+        DistractingCategory.GAMES,
+        DistractingCategory.NEWS
     )
 
     val DEFAULT_MESSAGES = listOf(

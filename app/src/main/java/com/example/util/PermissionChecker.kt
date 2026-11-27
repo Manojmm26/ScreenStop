@@ -2,6 +2,7 @@ package com.example.util
 
 import android.Manifest
 import android.app.AppOpsManager
+import android.app.NotificationManager
 import android.app.usage.UsageStatsManager
 import android.content.Context
 import android.content.Intent
@@ -19,7 +20,8 @@ object PermissionChecker {
         return PermissionSnapshot(
             hasOverlayPermission = hasOverlayPermission(context),
             hasUsageStatsPermission = hasUsageStatsPermission(context),
-            hasNotificationPermission = hasNotificationPermission(context)
+            hasNotificationPermission = hasNotificationPermission(context),
+            hasDndAccess = hasDndPolicyAccess(context)
         )
     }
 
@@ -73,6 +75,18 @@ object PermissionChecker {
         } else {
             true
         }
+    }
+
+    fun hasDndPolicyAccess(context: Context): Boolean {
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            ?: return false
+        return manager.isNotificationPolicyAccessGranted
+    }
+
+    fun openDndPolicyAccessSettings(context: Context) {
+        val intent = Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        runCatching { context.startActivity(intent) }
     }
 
     fun isDefaultHomeLauncher(context: Context): Boolean {

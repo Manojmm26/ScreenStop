@@ -27,6 +27,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -55,6 +57,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -70,10 +73,13 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
 import com.example.data.GuardDefaults
+import com.example.data.GuardSettings
 import com.example.data.InstalledAppInfo
 import com.example.ui.GuardUiState
 import com.example.ui.GuardViewModel
 import com.example.ui.takeover.DetoxBlockedScreen
+import com.example.ui.takeover.FrictionConfirmDialog
+import com.example.ui.takeover.PendingFrictionAction
 import com.example.ui.theme.AlabasterInk
 import com.example.ui.theme.CarbonSurface
 import com.example.ui.theme.HairlineBorder
@@ -85,9 +91,11 @@ import com.example.ui.theme.SignalVermilion
 import com.example.ui.theme.SignalVermilionDim
 import com.example.ui.theme.SlateContainer
 import com.example.ui.theme.SpaceGroteskFontFamily
+import com.example.ui.theme.WarningAmber
 import com.example.ui.theme.ZincMuted
 import com.example.ui.theme.ZincSecondary
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -105,6 +113,13 @@ fun MinimalistHomeScreen(
     var selectedAppForMenu by remember { mutableStateOf<InstalledAppInfo?>(null) }
     var renamingApp by remember { mutableStateOf<InstalledAppInfo?>(null) }
     var blockedAppAttempt by remember { mutableStateOf<InstalledAppInfo?>(null) }
+    var blockedAttemptIsDeepWork by remember { mutableStateOf(false) }
+    var showDeepWorkDialog by remember { mutableStateOf(false) }
+    var showEditFocusDialog by remember { mutableStateOf(false) }
+    var pendingEndDeepWork by remember { mutableStateOf<PendingFrictionAction.EndDeepWorkEarly?>(null) }
+
+    val homePagerState = rememberPagerState(initialPage = 0, pageCount = { 2 })
+    val scope = rememberCoroutineScope()
 
     var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) {
@@ -114,18 +129,29 @@ fun MinimalistHomeScreen(
         }
     }
 
-    // Pressing Back inside the All Apps drawer returns to Home; on Home it stays put.
+    // Pressing Back inside the All Apps drawer returns to Home; on Focus Note returns to Home Apps.
     BackHandler(enabled = showAllAppsDrawer) {
         showAllAppsDrawer = false
         drawerSearch = ""
     }
+    BackHandler(enabled = !showAllAppsDrawer && homePagerState.currentPage != 0) {
+        scope.launch { homePagerState.animateScrollToPage(0) }
+    }
 
     fun handleTapApp(app: InstalledAppInfo) {
         val currentNow = System.currentTimeMillis()
-        if (app.isDetoxLocked(currentNow)) {
-            blockedAppAttempt = app
-        } else {
-            onLaunchApp(app.packageName)
+        when {
+            app.isDetoxLocked(currentNow) -> {
+                blockedAttemptIsDeepWork = false
+                blockedAppAttempt = app
+            }
+
+            app.isRestrictedByDeepWork(uiState.settings, currentNow) -> {
+                blockedAttemptIsDeepWork = true
+                blockedAppAttempt = app
+            }
+
+            else -> onLaunchApp(app.packageName)
         }
     }
 
@@ -144,22 +170,56 @@ fun MinimalistHomeScreen(
                 .widthIn(max = 600.dp)
         ) { inDrawer ->
             if (!inDrawer) {
-                MinimalistHomePane(
-                    uiState = uiState,
-                    nowMillis = nowMillis,
-                    onTapApp = ::handleTapApp,
-                    onLongPressApp = { selectedAppForMenu = it },
-                    onOpenAllApps = { showAllAppsDrawer = true },
-                    onOpenScreenStop = onOpenScreenStop
-                )
+                Box(modifier = Modifier.fillMaxSize()) {
+                    HorizontalPager(
+                        state = homePagerState,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .testTag("launcher_home_pager")
+                    ) { page ->
+                        when (page) {
+                            0 -> MinimalistHomePane(
+                                uiState = uiState,
+                                nowMillis = nowMillis,
+                                onTapApp = ::handleTapApp,
+                                onLongPressApp = { selectedAppForMenu = it },
+                                onOpenDeepWork = { showDeepWorkDialog = true },
+                                onOpenAllApps = { showAllAppsDrawer = true },
+                                onOpenScreenStop = onOpenScreenStop
+                            )
+
+                            else -> MinimalistFocusNotePane(
+                                focusMantra = uiState.settings.homeFocusMantra,
+                                nowMillis = nowMillis,
+                                onEditClick = { showEditFocusDialog = true },
+                                onGoHomePage = {
+                                    scope.launch { homePagerState.animateScrollToPage(0) }
+                                }
+                            )
+                        }
+                    }
+
+                    HomePagerIndicator(
+                        currentPage = homePagerState.currentPage,
+                        onSelectPage = { targetPage ->
+                            scope.launch { homePagerState.animateScrollToPage(targetPage) }
+                        },
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .safeDrawingPadding()
+                            .padding(bottom = 8.dp)
+                    )
+                }
             } else {
                 MinimalistAppDrawerPane(
                     apps = uiState.installedApps,
+                    settings = uiState.settings,
                     nowMillis = nowMillis,
                     searchQuery = drawerSearch,
                     showHidden = showHiddenInDrawer,
                     onSearchChange = { drawerSearch = it },
                     onToggleShowHidden = { showHiddenInDrawer = !showHiddenInDrawer },
+                    onOpenDeepWork = { showDeepWorkDialog = true },
                     onBackHome = {
                         showAllAppsDrawer = false
                         drawerSearch = ""
@@ -170,16 +230,83 @@ fun MinimalistHomeScreen(
             }
         }
 
-        // Immediate in-launcher Detox Lock screen if user taps a locked app
+        // Immediate in-launcher Detox Lock or Deep Work block screen if user taps a restricted app
         val blocked = blockedAppAttempt
-        val blockedUntil = blocked?.blockedUntilMillis
-        if (blocked != null && blockedUntil != null && blockedUntil > nowMillis) {
+        val blockedUntil = if (blockedAttemptIsDeepWork) {
+            uiState.settings.deepWorkUntilMillis
+        } else {
+            blocked?.blockedUntilMillis ?: 0L
+        }
+        if (blocked != null && blockedUntil > nowMillis) {
             DetoxBlockedScreen(
                 appLabel = blocked.displayLabel,
                 blockedUntilMillis = blockedUntil,
-                onReturnHome = { blockedAppAttempt = null }
+                isDeepWork = blockedAttemptIsDeepWork,
+                categoryLabel = if (blockedAttemptIsDeepWork) blocked.category?.displayName else null,
+                onReturnHome = {
+                    blockedAppAttempt = null
+                    blockedAttemptIsDeepWork = false
+                }
             )
         }
+    }
+
+    if (showDeepWorkDialog) {
+        if (uiState.settings.isDeepWorkActive(nowMillis)) {
+            DeepWorkActiveDialog(
+                settings = uiState.settings,
+                hasDndAccess = uiState.permissions.hasDndAccess,
+                nowMillis = nowMillis,
+                onExtend15m = { viewModel.extendDeepWork(15) },
+                onRequestEndEarly = {
+                    showDeepWorkDialog = false
+                    pendingEndDeepWork = PendingFrictionAction.EndDeepWorkEarly(
+                        challengeWords = GuardDefaults.pickRandomChallengeWords(2, emptyList())
+                    )
+                },
+                onOpenDndSettings = { viewModel.openDndPolicyAccessSettings() },
+                onDismiss = { showDeepWorkDialog = false }
+            )
+        } else {
+            DeepWorkStartDialog(
+                settings = uiState.settings,
+                installedApps = uiState.installedApps,
+                hasDndAccess = uiState.permissions.hasDndAccess,
+                nowMillis = nowMillis,
+                onOpenDndSettings = { viewModel.openDndPolicyAccessSettings() },
+                onDismiss = { showDeepWorkDialog = false },
+                onStart = { untilMillis, categories, strictAll ->
+                    showDeepWorkDialog = false
+                    viewModel.startDeepWork(
+                        untilMillis = untilMillis,
+                        categories = categories,
+                        strictAllNonExempt = strictAll
+                    )
+                }
+            )
+        }
+    }
+
+    pendingEndDeepWork?.let { action ->
+        FrictionConfirmDialog(
+            action = action,
+            onDismiss = { pendingEndDeepWork = null },
+            onConfirmed = {
+                pendingEndDeepWork = null
+                viewModel.endDeepWorkEarly()
+            }
+        )
+    }
+
+    if (showEditFocusDialog) {
+        EditFocusMantraDialog(
+            initialText = uiState.settings.homeFocusMantra,
+            onDismiss = { showEditFocusDialog = false },
+            onSave = { updated ->
+                viewModel.setHomeFocusMantra(updated)
+                showEditFocusDialog = false
+            }
+        )
     }
 
     selectedAppForMenu?.let { app ->
@@ -228,6 +355,7 @@ private fun MinimalistHomePane(
     nowMillis: Long,
     onTapApp: (InstalledAppInfo) -> Unit,
     onLongPressApp: (InstalledAppInfo) -> Unit,
+    onOpenDeepWork: () -> Unit,
     onOpenAllApps: () -> Unit,
     onOpenScreenStop: () -> Unit
 ) {
@@ -248,7 +376,7 @@ private fun MinimalistHomePane(
         modifier = Modifier
             .fillMaxSize()
             .safeDrawingPadding()
-            .padding(horizontal = 28.dp, vertical = 28.dp),
+            .padding(start = 28.dp, end = 28.dp, top = 28.dp, bottom = 52.dp),
         verticalArrangement = Arrangement.SpaceBetween
     ) {
         // Top Clock + Minimal Guard Pill
@@ -337,10 +465,15 @@ private fun MinimalistHomePane(
             } else {
                 LazyColumn(
                     verticalArrangement = Arrangement.spacedBy(6.dp),
-                    modifier = Modifier.testTag("launcher_favorites_list")
+                    contentPadding = PaddingValues(vertical = 4.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("launcher_favorites_list")
                 ) {
                     items(favorites, key = { it.packageName }) { app ->
                         val isLocked = app.isDetoxLocked(nowMillis)
+                        val isDeepWorkRestricted = !isLocked && app.isRestrictedByDeepWork(uiState.settings, nowMillis)
+                        val isBlocked = isLocked || isDeepWorkRestricted
                         val remaining = (app.blockedUntilMillis ?: 0L) - nowMillis
                         Row(
                             modifier = Modifier
@@ -363,23 +496,82 @@ private fun MinimalistHomePane(
                                     fontSize = 24.sp,
                                     letterSpacing = (-0.4).sp
                                 ),
-                                color = if (isLocked) ZincMuted else AlabasterInk,
+                                color = if (isBlocked) ZincMuted else AlabasterInk,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier.weight(1f)
                             )
-                            if (isLocked) {
-                                Surface(
-                                    color = SignalVermilionDim,
-                                    shape = CircleShape,
-                                    border = BorderStroke(1.dp, SignalVermilion.copy(alpha = 0.5f))
+                            if (app.shouldShowDailyUsage || isBlocked) {
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Text(
-                                        text = GuardDefaults.formatRemainingLock(remaining),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = SignalVermilion,
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                                    )
+                                    if (app.shouldShowDailyUsage) {
+                                        val usageTint = when {
+                                            app.todayUsageMinutes >= 60 -> SignalVermilion
+                                            app.todayUsageMinutes >= 30 -> WarningAmber
+                                            else -> ZincSecondary
+                                        }
+                                        val usageBg = when {
+                                            app.todayUsageMinutes >= 60 -> SignalVermilionDim
+                                            app.todayUsageMinutes >= 30 -> WarningAmber.copy(alpha = 0.14f)
+                                            else -> CarbonSurface
+                                        }
+                                        val usageBorder = when {
+                                            app.todayUsageMinutes >= 60 -> SignalVermilion.copy(alpha = 0.5f)
+                                            app.todayUsageMinutes >= 30 -> WarningAmber.copy(alpha = 0.45f)
+                                            else -> HairlineBorder
+                                        }
+                                        Surface(
+                                            color = usageBg,
+                                            shape = CircleShape,
+                                            border = BorderStroke(1.dp, usageBorder),
+                                            modifier = Modifier.testTag("launcher_fav_usage_${app.packageName}")
+                                        ) {
+                                            Text(
+                                                text = stringResource(
+                                                    R.string.launcher_usage_minutes,
+                                                    app.todayUsageMinutes
+                                                ),
+                                                style = TextStyle(
+                                                    fontFamily = JetBrainsMonoFontFamily,
+                                                    fontWeight = FontWeight.Medium,
+                                                    fontSize = 11.sp,
+                                                    fontFeatureSettings = "tnum"
+                                                ),
+                                                color = usageTint,
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                            )
+                                        }
+                                    }
+                                    if (isLocked) {
+                                        Surface(
+                                            color = SignalVermilionDim,
+                                            shape = CircleShape,
+                                            border = BorderStroke(1.dp, SignalVermilion.copy(alpha = 0.5f))
+                                        ) {
+                                            Text(
+                                                text = GuardDefaults.formatRemainingLock(remaining),
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = SignalVermilion,
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                            )
+                                        }
+                                    } else if (isDeepWorkRestricted) {
+                                        Surface(
+                                            color = SignalVermilionDim,
+                                            shape = CircleShape,
+                                            border = BorderStroke(1.dp, SignalVermilion.copy(alpha = 0.45f))
+                                        ) {
+                                            Text(
+                                                text = stringResource(R.string.deep_work_pill_tag),
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = SignalVermilion,
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -388,60 +580,71 @@ private fun MinimalistHomePane(
             }
         }
 
-        // Bottom Minimal Action Row
-        Row(
+        // Bottom Controls: Global Deep Work Bar + Minimal Action Row
+        Column(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Surface(
-                onClick = onOpenScreenStop,
-                color = CarbonSurface,
-                shape = RoundedCornerShape(12.dp),
-                border = BorderStroke(1.dp, HairlineBorder),
-                modifier = Modifier.testTag("launcher_open_screenstop")
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.Shield,
-                        contentDescription = null,
-                        tint = AlabasterInk,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Text(
-                        text = stringResource(R.string.launcher_home_guard_btn),
-                        style = MaterialTheme.typography.labelLarge,
-                        color = AlabasterInk
-                    )
-                }
-            }
+            DeepWorkLaunchBar(
+                settings = uiState.settings,
+                nowMillis = nowMillis,
+                onClick = onOpenDeepWork
+            )
 
-            Surface(
-                onClick = onOpenAllApps,
-                color = AlabasterInk,
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.testTag("launcher_open_all_apps")
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                Surface(
+                    onClick = onOpenScreenStop,
+                    color = CarbonSurface,
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, HairlineBorder),
+                    modifier = Modifier.testTag("launcher_open_screenstop")
                 ) {
-                    Text(
-                        text = stringResource(R.string.launcher_home_all_apps),
-                        style = MaterialTheme.typography.labelLarge,
-                        color = ObsidianCanvas
-                    )
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                        contentDescription = null,
-                        tint = ObsidianCanvas,
-                        modifier = Modifier.size(16.dp)
-                    )
+                    Row(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Shield,
+                            contentDescription = null,
+                            tint = AlabasterInk,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Text(
+                            text = stringResource(R.string.launcher_home_guard_btn),
+                            style = MaterialTheme.typography.labelLarge,
+                            color = AlabasterInk
+                        )
+                    }
+                }
+
+                Surface(
+                    onClick = onOpenAllApps,
+                    color = AlabasterInk,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.testTag("launcher_open_all_apps")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = stringResource(R.string.launcher_home_all_apps),
+                            style = MaterialTheme.typography.labelLarge,
+                            color = ObsidianCanvas
+                        )
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                            contentDescription = null,
+                            tint = ObsidianCanvas,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
                 }
             }
         }
@@ -452,11 +655,13 @@ private fun MinimalistHomePane(
 @Composable
 private fun MinimalistAppDrawerPane(
     apps: List<InstalledAppInfo>,
+    settings: GuardSettings,
     nowMillis: Long,
     searchQuery: String,
     showHidden: Boolean,
     onSearchChange: (String) -> Unit,
     onToggleShowHidden: () -> Unit,
+    onOpenDeepWork: () -> Unit,
     onBackHome: () -> Unit,
     onTapApp: (InstalledAppInfo) -> Unit,
     onLongPressApp: (InstalledAppInfo) -> Unit
@@ -472,6 +677,8 @@ private fun MinimalistAppDrawerPane(
             hiddenAllowed && matchesQuery
         }.sortedBy { it.displayLabel.lowercase() }
     }
+
+    var focusedWheelApp by remember { mutableStateOf<InstalledAppInfo?>(null) }
 
     Column(
         modifier = Modifier
@@ -506,92 +713,48 @@ private fun MinimalistAppDrawerPane(
                 )
             }
 
-            if (hiddenCount > 0) {
-                TextButton(
-                    onClick = onToggleShowHidden,
-                    modifier = Modifier.testTag("launcher_toggle_hidden")
-                ) {
-                    Text(
-                        text = if (showHidden) {
-                            stringResource(R.string.launcher_drawer_hide_hidden)
-                        } else {
-                            stringResource(R.string.launcher_drawer_show_hidden, hiddenCount)
-                        },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = ZincSecondary
-                    )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                if (hiddenCount > 0) {
+                    TextButton(
+                        onClick = onToggleShowHidden,
+                        modifier = Modifier.testTag("launcher_toggle_hidden")
+                    ) {
+                        Text(
+                            text = if (showHidden) {
+                                stringResource(R.string.launcher_drawer_hide_hidden)
+                            } else {
+                                stringResource(R.string.launcher_drawer_show_hidden, hiddenCount)
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = ZincSecondary
+                        )
+                    }
                 }
+
+                DeepWorkCompactChip(
+                    settings = settings,
+                    nowMillis = nowMillis,
+                    onClick = onOpenDeepWork
+                )
             }
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(6.dp))
 
-        LazyColumn(
+        MinimalistWheelAppPicker(
+            apps = visibleApps,
+            settings = settings,
+            nowMillis = nowMillis,
+            onFocusedAppChanged = { focusedWheelApp = it },
+            onLaunchApp = onTapApp,
+            onLongPressApp = onLongPressApp,
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
-                .testTag("launcher_drawer_list"),
-            contentPadding = PaddingValues(vertical = 8.dp)
-        ) {
-            items(visibleApps, key = { it.packageName }) { app ->
-                val isLocked = app.isDetoxLocked(nowMillis)
-                val remaining = (app.blockedUntilMillis ?: 0L) - nowMillis
-                Column {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(8.dp))
-                            .combinedClickable(
-                                onClick = { onTapApp(app) },
-                                onLongClick = { onLongPressApp(app) }
-                            )
-                            .padding(horizontal = 8.dp, vertical = 14.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text(
-                            text = app.displayLabel,
-                            style = TextStyle(
-                                fontFamily = SpaceGroteskFontFamily,
-                                fontWeight = FontWeight.Normal,
-                                fontSize = 19.sp
-                            ),
-                            color = when {
-                                isLocked -> ZincMuted
-                                app.isHiddenInLauncher -> ZincSecondary
-                                else -> AlabasterInk
-                            },
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f)
-                        )
-
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            if (isLocked) {
-                                Text(
-                                    text = "DETOX · ${GuardDefaults.formatRemainingLock(remaining)}",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = SignalVermilion
-                                )
-                            } else if (app.isPrompted) {
-                                Text(
-                                    text = "PROMPT",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = ZincSecondary
-                                )
-                            } else if (app.isException) {
-                                Text(
-                                    text = "EXEMPT",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = SafeEmerald
-                                )
-                            }
-                        }
-                    }
-                    HorizontalDivider(color = HairlineSubtle)
-                }
-            }
-        }
+        )
 
         Spacer(modifier = Modifier.height(10.dp))
 
@@ -627,8 +790,9 @@ private fun MinimalistAppDrawerPane(
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
             keyboardActions = KeyboardActions(
                 onGo = {
-                    if (visibleApps.size == 1) {
-                        onTapApp(visibleApps.first())
+                    val target = focusedWheelApp ?: visibleApps.firstOrNull()
+                    if (target != null) {
+                        onTapApp(target)
                     }
                 }
             ),

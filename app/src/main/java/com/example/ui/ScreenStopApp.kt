@@ -43,7 +43,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -61,13 +63,16 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.example.R
+import com.example.data.GuardDefaults
 import com.example.data.OverlayContent
 import com.example.ui.screens.ExceptionsScreen
 import com.example.ui.screens.GuardScreen
 import com.example.ui.screens.LauncherHubScreen
 import com.example.ui.screens.MessagesScreen
 import com.example.ui.takeover.DetoxBlockedScreen
+import com.example.ui.takeover.FrictionConfirmDialog
 import com.example.ui.takeover.HowLongPromptScreen
+import com.example.ui.takeover.PendingFrictionAction
 import com.example.ui.takeover.TakeoverScreen
 import com.example.ui.theme.AlabasterInk
 import com.example.ui.theme.CarbonSurface
@@ -130,6 +135,7 @@ fun ScreenStopApp(
     val currentRoute = backStackEntry?.destination?.route ?: ROUTE_GUARD
     val snackbarHostState = remember { SnackbarHostState() }
     val lifecycleOwner = LocalLifecycleOwner.current
+    var pendingFrictionAction by remember { mutableStateOf<PendingFrictionAction?>(null) }
 
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
@@ -226,7 +232,25 @@ fun ScreenStopApp(
                             composable(ROUTE_GUARD) {
                                 GuardScreen(
                                     uiState = uiState,
-                                    onToggleGuard = viewModel::toggleGuard,
+                                    onToggleGuard = { enabled ->
+                                        if (enabled) {
+                                            viewModel.toggleGuard(true)
+                                        } else {
+                                            val wordCount = maxOf(
+                                                2,
+                                                GuardDefaults.challengeWordCountForOverrides(
+                                                    consecutiveOverrides = uiState.runtime.consecutiveOverrides,
+                                                    escalatingEnabled = uiState.settings.escalatingFrictionEnabled
+                                                )
+                                            )
+                                            pendingFrictionAction = PendingFrictionAction.DisarmGuard(
+                                                challengeWords = GuardDefaults.pickRandomChallengeWords(
+                                                    count = wordCount,
+                                                    previousWords = emptyList()
+                                                )
+                                            )
+                                        }
+                                    },
                                     onSelectInterval = viewModel::setIntervalMinutes,
                                     onToggleEscalatingFriction = viewModel::setEscalatingFrictionEnabled,
                                     onRequestOverlayPermission = viewModel::openOverlaySettings,
@@ -248,7 +272,19 @@ fun ScreenStopApp(
                                     onToggleException = viewModel::toggleExceptionPackage,
                                     onTogglePrompted = viewModel::togglePromptedPackage,
                                     onSetDetoxLock = viewModel::setDetoxLock,
-                                    onClearDetoxLock = viewModel::clearDetoxLock,
+                                    onClearDetoxLock = { packageName ->
+                                        val label = uiState.installedApps
+                                            .firstOrNull { it.packageName == packageName }
+                                            ?.displayLabel ?: packageName
+                                        pendingFrictionAction = PendingFrictionAction.UnlockDetoxApp(
+                                            packageName = packageName,
+                                            appLabel = label,
+                                            challengeWords = GuardDefaults.pickRandomChallengeWords(
+                                                count = 2,
+                                                previousWords = emptyList()
+                                            )
+                                        )
+                                    },
                                     onToggleLauncherFavorite = viewModel::toggleLauncherFavorite,
                                     onToggleLauncherHidden = viewModel::toggleLauncherHidden,
                                     onRenameApp = viewModel::setLauncherCustomLabel,
@@ -306,6 +342,21 @@ fun ScreenStopApp(
             }
 
             null -> Unit
+        }
+
+        pendingFrictionAction?.let { action ->
+            FrictionConfirmDialog(
+                action = action,
+                onDismiss = { pendingFrictionAction = null },
+                onConfirmed = {
+                    pendingFrictionAction = null
+                    when (action) {
+                        is PendingFrictionAction.DisarmGuard -> viewModel.toggleGuard(false)
+                        is PendingFrictionAction.UnlockDetoxApp -> viewModel.clearDetoxLock(action.packageName)
+                        is PendingFrictionAction.EndDeepWorkEarly -> viewModel.endDeepWorkEarly()
+                    }
+                }
+            )
         }
     }
 }

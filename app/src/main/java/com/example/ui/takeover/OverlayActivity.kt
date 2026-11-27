@@ -12,6 +12,9 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.OverlayContent
 import com.example.service.ActiveOverlayRequest
@@ -34,6 +37,7 @@ class OverlayActivity : ComponentActivity() {
             statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT)
         )
+        applyImmersiveSystemBars()
 
         setContent {
             ScreenStopTheme {
@@ -63,6 +67,8 @@ class OverlayActivity : ComponentActivity() {
                         DetoxBlockedScreen(
                             appLabel = content.appLabel,
                             blockedUntilMillis = content.blockedUntilMillis,
+                            isDeepWork = content.isDeepWork,
+                            categoryLabel = content.categoryLabel,
                             onReturnHome = {
                                 handleReturnHome(current)
                             }
@@ -98,6 +104,18 @@ class OverlayActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         AppForegroundTracker.setOverlayActivityVisible(true)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        applyImmersiveSystemBars()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) {
+            applyImmersiveSystemBars()
+        }
     }
 
     override fun onStop() {
@@ -176,6 +194,15 @@ class OverlayActivity : ComponentActivity() {
             finish()
             disableTransitionAnimation()
         }
+    }
+
+    private fun applyImmersiveSystemBars() {
+        val controller = WindowCompat.getInsetsController(window, window.decorView)
+        controller.systemBarsBehavior =
+            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        controller.hide(
+            WindowInsetsCompat.Type.statusBars() or WindowInsetsCompat.Type.navigationBars()
+        )
     }
 
     private fun disableTransitionAnimation() {

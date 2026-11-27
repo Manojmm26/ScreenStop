@@ -25,7 +25,9 @@ import com.example.data.GuardSettingsRepository
 import com.example.data.GuardStatus
 import com.example.data.OverlayContent
 import com.example.ui.takeover.OverlayActivity
+import com.example.util.AppCategoryClassifier
 import com.example.util.AppForegroundTracker
+import com.example.util.DeepWorkSilenceController
 import com.example.util.ForegroundAppDetector
 import com.example.util.PermissionChecker
 import kotlinx.coroutines.CoroutineScope
@@ -113,25 +115,6 @@ class ScreenGuardService : Service() {
             ACTION_STOP -> {
                 isPreviewMode = false
                 stopGuardAndSelf()
-                return START_NOT_STICKY
-            }
-
-            ACTION_DISARM -> {
-                isPreviewMode = false
-                serviceScope.launch {
-                    repository.setGuardEnabled(false)
-                    val refreshed = repository.getCurrentSettings()
-                    latestSettings = refreshed
-                    withContext(Dispatchers.Main) {
-                        if (!refreshed.hasActiveEnforcement()) {
-                            stopGuardAndSelf()
-                        } else {
-                            currentStatus = GuardStatus.DISARMED
-                            publishRuntimeState(foregroundPkg = null, displayedSession = null)
-                            updateNotification(force = true)
-                        }
-                    }
-                }
                 return START_NOT_STICKY
             }
 
@@ -286,7 +269,22 @@ class ScreenGuardService : Service() {
         val nowEpochMs = System.currentTimeMillis()
         val nowElapsedMs = SystemClock.elapsedRealtime()
 
-        if (!settings.hasActiveEnforcement(nowEpochMs) && !isPreviewMode) {
+        // Automatically finish Deep Work and restore previous DND state when the target time arrives.
+        if (settings.deepWorkUntilMillis > 0L && nowEpochMs >= settings.deepWorkUntilMillis) {
+            val savedFilter = repository.clearDeepWork()
+            DeepWorkSilenceController.restoreSilence(applicationContext, savedFilter)
+            latestSettings = settings.copy(
+                deepWorkUntilMillis = 0L,
+                deepWorkSavedInterruptionFilter = DeepWorkSilenceController.NO_SAVED_FILTER
+            )
+            updateNotification(force = true)
+            if (!latestSettings.hasActiveEnforcement(nowEpochMs) && !isPreviewMode) {
+                withContext(Dispatchers.Main) { stopGuardAndSelf() }
+                return
+            }
+        }
+
+        if (!latestSettings.hasActiveEnforcement(nowEpochMs) && !isPreviewMode) {
             withContext(Dispatchers.Main) { stopGuardAndSelf() }
             return
         }
@@ -321,7 +319,7 @@ class ScreenGuardService : Service() {
         val deltaMillis = sessionTracker.consumeDeltaMillis(nowElapsedMs)
         val foregroundPkg = foregroundDetector.getCurrentForegroundPackage()
 
-        // Priority 1: Timed Detox Lock — immediately hard-block without word override.
+        // Priority 1: Timed Detox Lock & Deep Work Category Restriction — immediate hard-block.
         if (foregroundPkg != null && foregroundPkg != packageName) {
             val blockedUntil = settings.blockedAppsUntilMillis[foregroundPkg]
             if (blockedUntil != null && blockedUntil > nowEpochMs) {
@@ -331,9 +329,36 @@ class ScreenGuardService : Service() {
                     settings.launcherRenamedApps
                 )
                 withContext(Dispatchers.Main) {
-                    triggerDetoxBlocked(foregroundPkg, appLabel, blockedUntil)
+                    triggerDetoxBlocked(
+                        pkg = foregroundPkg,
+                        appLabel = appLabel,
+                        blockedUntilMillis = blockedUntil,
+                        isDeepWork = false,
+                        categoryLabel = null
+                    )
                 }
                 return
+            }
+
+            if (settings.isDeepWorkActive(nowEpochMs)) {
+                val category = AppCategoryClassifier.classifyPackage(applicationContext, foregroundPkg)
+                if (settings.isRestrictedByDeepWork(foregroundPkg, category, nowEpochMs)) {
+                    val appLabel = PermissionChecker.resolveAppLabel(
+                        applicationContext,
+                        foregroundPkg,
+                        settings.launcherRenamedApps
+                    )
+                    withContext(Dispatchers.Main) {
+                        triggerDetoxBlocked(
+                            pkg = foregroundPkg,
+                            appLabel = appLabel,
+                            blockedUntilMillis = settings.deepWorkUntilMillis,
+                            isDeepWork = true,
+                            categoryLabel = category?.displayName
+                        )
+                    }
+                    return
+                }
             }
         }
 
@@ -423,7 +448,13 @@ class ScreenGuardService : Service() {
         )
     }
 
-    private fun triggerDetoxBlocked(pkg: String, appLabel: String, blockedUntilMillis: Long) {
+    private fun triggerDetoxBlocked(
+        pkg: String,
+        appLabel: String,
+        blockedUntilMillis: Long,
+        isDeepWork: Boolean = false,
+        categoryLabel: String? = null
+    ) {
         if (!PermissionChecker.hasOverlayPermission(applicationContext)) return
 
         markOverlayLaunching(pkg, appLabel, GuardStatus.DETOX_BLOCKED)
@@ -434,7 +465,9 @@ class ScreenGuardService : Service() {
             content = OverlayContent.DetoxBlocked(
                 packageName = pkg,
                 appLabel = appLabel,
-                blockedUntilMillis = blockedUntilMillis
+                blockedUntilMillis = blockedUntilMillis,
+                isDeepWork = isDeepWork,
+                categoryLabel = categoryLabel
             ),
             launchHomeOnReturn = true,
             onReturnHome = {
@@ -736,10 +769,26 @@ class ScreenGuardService : Service() {
     }
 
     private fun buildNotification(displayedSession: ActiveAppSession? = null): Notification {
+        val activeOverlay = OverlayCoordinator.activeRequest.value
+        val shouldRouteToOverlay = activeOverlay != null && (
+            currentStatus == GuardStatus.TAKEOVER_ACTIVE ||
+                currentStatus == GuardStatus.DETOX_BLOCKED
+            )
+
+        val tapTargetIntent = if (shouldRouteToOverlay) {
+            Intent(this, OverlayActivity::class.java).addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                    Intent.FLAG_ACTIVITY_NO_ANIMATION
+            )
+        } else {
+            Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        }
+
         val openAppIntent = PendingIntent.getActivity(
             this,
-            0,
-            Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            if (shouldRouteToOverlay) 2 else 0,
+            tapTargetIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
@@ -749,17 +798,26 @@ class ScreenGuardService : Service() {
         val elapsedFormatted = GuardDefaults.formatDuration(elapsedSeconds)
         val targetFormatted = GuardDefaults.formatDuration(targetSeconds)
 
-        val title = if (settings.isGuardEnabled) {
-            getString(R.string.notif_title_monitoring)
-        } else {
-            getString(R.string.notif_title_rules_active)
+        val nowEpoch = System.currentTimeMillis()
+        val deepWorkActive = settings.isDeepWorkActive(nowEpoch)
+        val deepWorkRemaining = GuardDefaults.formatRemainingLock(settings.deepWorkUntilMillis - nowEpoch)
+
+        val title = when {
+            deepWorkActive -> getString(R.string.notif_title_deep_work)
+            settings.isGuardEnabled -> getString(R.string.notif_title_monitoring)
+            else -> getString(R.string.notif_title_rules_active)
         }
 
         val bodyText = when {
+            currentStatus == GuardStatus.SCREEN_OFF && deepWorkActive ->
+                getString(R.string.notif_text_deep_work, deepWorkRemaining)
             currentStatus == GuardStatus.SCREEN_OFF -> getString(R.string.notif_text_screen_off)
             currentStatus == GuardStatus.TAKEOVER_ACTIVE -> getString(R.string.notif_text_takeover)
+            currentStatus == GuardStatus.DETOX_BLOCKED && deepWorkActive ->
+                getString(R.string.notif_text_deep_work_blocked, deepWorkRemaining)
             currentStatus == GuardStatus.DETOX_BLOCKED -> getString(R.string.notif_text_detox)
             currentStatus == GuardStatus.AWAITING_SESSION_PROMPT -> getString(R.string.notif_text_prompt)
+            deepWorkActive -> getString(R.string.notif_text_deep_work, deepWorkRemaining)
             displayedSession != null -> getString(
                 R.string.notif_text_session_active,
                 displayedSession.appLabel,
@@ -782,7 +840,7 @@ class ScreenGuardService : Service() {
             )
         }
 
-        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
+        return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_screenstop)
             .setContentTitle(title)
             .setContentText(bodyText)
@@ -791,18 +849,7 @@ class ScreenGuardService : Service() {
             .setSilent(true)
             .setContentIntent(openAppIntent)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
-
-        if (settings.isGuardEnabled) {
-            val disarmIntent = PendingIntent.getService(
-                this,
-                1,
-                Intent(this, ScreenGuardService::class.java).setAction(ACTION_DISARM),
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
-            builder.addAction(0, getString(R.string.notif_action_disarm), disarmIntent)
-        }
-
-        return builder.build()
+            .build()
     }
 
     companion object {
@@ -813,7 +860,6 @@ class ScreenGuardService : Service() {
 
         const val ACTION_START = "com.example.action.START_GUARD"
         const val ACTION_STOP = "com.example.action.STOP_GUARD"
-        const val ACTION_DISARM = "com.example.action.DISARM_GUARD"
         const val ACTION_TEST_TAKEOVER = "com.example.action.TEST_TAKEOVER"
         const val ACTION_TEST_HOW_LONG = "com.example.action.TEST_HOW_LONG"
 

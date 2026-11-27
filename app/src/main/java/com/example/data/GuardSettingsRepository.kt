@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -36,6 +37,11 @@ class GuardSettingsRepository(private val context: Context) {
         val LAUNCHER_HIDDEN_PACKAGES = stringSetPreferencesKey("launcher_hidden_packages")
         val LAUNCHER_RENAMED_JSON = stringPreferencesKey("launcher_renamed_json")
         val SHOW_GUARD_ON_HOME = booleanPreferencesKey("show_guard_status_on_home")
+        val HOME_FOCUS_MANTRA = stringPreferencesKey("home_focus_mantra")
+        val DEEP_WORK_UNTIL_MILLIS = longPreferencesKey("deep_work_until_millis")
+        val DEEP_WORK_CATEGORIES = stringSetPreferencesKey("deep_work_categories")
+        val DEEP_WORK_STRICT_ALL = booleanPreferencesKey("deep_work_strict_all_non_exempt")
+        val DEEP_WORK_SAVED_FILTER = intPreferencesKey("deep_work_saved_interruption_filter")
     }
 
     val settingsFlow: Flow<GuardSettings> = context.guardDataStore.data
@@ -60,6 +66,18 @@ class GuardSettingsRepository(private val context: Context) {
             val hidden = prefs[Keys.LAUNCHER_HIDDEN_PACKAGES] ?: emptySet()
             val renamed = decodeStringMap(prefs[Keys.LAUNCHER_RENAMED_JSON])
             val showGuardOnHome = prefs[Keys.SHOW_GUARD_ON_HOME] ?: true
+            val homeFocusMantra = prefs[Keys.HOME_FOCUS_MANTRA]
+                ?.takeIf { it.isNotBlank() }
+                ?: GuardDefaults.DEFAULT_HOME_FOCUS_MANTRA
+            val deepWorkUntil = prefs[Keys.DEEP_WORK_UNTIL_MILLIS] ?: 0L
+            val rawCategories = prefs[Keys.DEEP_WORK_CATEGORIES]
+            val deepWorkCategories = if (rawCategories == null) {
+                GuardDefaults.DEFAULT_DEEP_WORK_CATEGORIES
+            } else {
+                rawCategories.mapNotNull { DistractingCategory.fromStorageKey(it) }.toSet()
+            }
+            val deepWorkStrictAll = prefs[Keys.DEEP_WORK_STRICT_ALL] ?: false
+            val deepWorkSavedFilter = prefs[Keys.DEEP_WORK_SAVED_FILTER] ?: -1
 
             GuardSettings(
                 isGuardEnabled = enabled,
@@ -72,7 +90,12 @@ class GuardSettingsRepository(private val context: Context) {
                 launcherFavoritePackages = favorites,
                 launcherHiddenPackages = hidden,
                 launcherRenamedApps = renamed,
-                showGuardStatusOnHome = showGuardOnHome
+                showGuardStatusOnHome = showGuardOnHome,
+                homeFocusMantra = homeFocusMantra,
+                deepWorkUntilMillis = deepWorkUntil,
+                deepWorkCategories = deepWorkCategories,
+                deepWorkStrictAllNonExempt = deepWorkStrictAll,
+                deepWorkSavedInterruptionFilter = deepWorkSavedFilter
             )
         }
 
@@ -161,14 +184,14 @@ class GuardSettingsRepository(private val context: Context) {
     }
 
     suspend fun toggleLauncherFavorite(packageName: String): Boolean {
-        var addedOrRemoved = false
+        var added = false
         context.guardDataStore.edit { prefs ->
             val current = decodeStringList(prefs[Keys.LAUNCHER_FAVORITES_JSON]).toMutableList()
             if (packageName in current) {
                 current.remove(packageName)
                 prefs[Keys.LAUNCHER_FAVORITES_JSON] = encodeStringList(current)
-                addedOrRemoved = true
-            } else if (current.size < GuardDefaults.MAX_LAUNCHER_FAVORITES) {
+                added = false
+            } else {
                 current.add(packageName)
                 prefs[Keys.LAUNCHER_FAVORITES_JSON] = encodeStringList(current)
                 // Ensure pinned favorite isn't hidden
@@ -176,10 +199,10 @@ class GuardSettingsRepository(private val context: Context) {
                 if (packageName in hidden) {
                     prefs[Keys.LAUNCHER_HIDDEN_PACKAGES] = hidden - packageName
                 }
-                addedOrRemoved = true
+                added = true
             }
         }
-        return addedOrRemoved
+        return added
     }
 
     suspend fun toggleLauncherHidden(packageName: String) {
@@ -213,6 +236,57 @@ class GuardSettingsRepository(private val context: Context) {
         context.guardDataStore.edit { prefs ->
             prefs[Keys.SHOW_GUARD_ON_HOME] = show
         }
+    }
+
+    suspend fun setHomeFocusMantra(text: String) {
+        val cleaned = text.trim()
+        context.guardDataStore.edit { prefs ->
+            if (cleaned.isEmpty()) {
+                prefs.remove(Keys.HOME_FOCUS_MANTRA)
+            } else {
+                prefs[Keys.HOME_FOCUS_MANTRA] = cleaned
+            }
+        }
+    }
+
+    suspend fun startDeepWork(
+        untilMillis: Long,
+        categories: Set<DistractingCategory>,
+        strictAllNonExempt: Boolean,
+        savedInterruptionFilter: Int
+    ) {
+        context.guardDataStore.edit { prefs ->
+            prefs[Keys.DEEP_WORK_UNTIL_MILLIS] = untilMillis
+            prefs[Keys.DEEP_WORK_CATEGORIES] = categories.map { it.storageKey }.toSet()
+            prefs[Keys.DEEP_WORK_STRICT_ALL] = strictAllNonExempt
+            if (savedInterruptionFilter != -1) {
+                prefs[Keys.DEEP_WORK_SAVED_FILTER] = savedInterruptionFilter
+            }
+        }
+    }
+
+    suspend fun extendDeepWork(extraMillis: Long): Long {
+        var newUntil = 0L
+        context.guardDataStore.edit { prefs ->
+            val currentUntil = prefs[Keys.DEEP_WORK_UNTIL_MILLIS] ?: 0L
+            val base = currentUntil.coerceAtLeast(System.currentTimeMillis())
+            newUntil = base + extraMillis
+            prefs[Keys.DEEP_WORK_UNTIL_MILLIS] = newUntil
+        }
+        return newUntil
+    }
+
+    /**
+     * Clears active Deep Work timer and returns any saved interruption filter that should be restored.
+     */
+    suspend fun clearDeepWork(): Int {
+        var savedFilter = -1
+        context.guardDataStore.edit { prefs ->
+            savedFilter = prefs[Keys.DEEP_WORK_SAVED_FILTER] ?: -1
+            prefs[Keys.DEEP_WORK_UNTIL_MILLIS] = 0L
+            prefs[Keys.DEEP_WORK_SAVED_FILTER] = -1
+        }
+        return savedFilter
     }
 
     suspend fun addMessage(text: String): Boolean {

@@ -94,8 +94,8 @@
     <string name="launcher_open_now">Open Minimalist Home</string>
     <string name="launcher_show_guard_title">Show Guard Status on Home</string>
     <string name="launcher_show_guard_desc">Displays live timer and detox count below the clock.</string>
-    <string name="launcher_favorites_header">PINNED HOME FAVORITES (%1$d / 7)</string>
-    <string name="launcher_favorites_empty">No favorites pinned yet. Tap any app in the Apps tab or long-press in the drawer to pin up to 7 text shortcuts.</string>
+    <string name="launcher_favorites_header">PINNED HOME FAVORITES (%1$d)</string>
+    <string name="launcher_favorites_empty">No favorites pinned yet. Tap any app in the Apps tab or long-press in the drawer to pin text shortcuts here.</string>
     <string name="launcher_hidden_header">HIDDEN APPS (%1$d)</string>
     <string name="launcher_unhide">Unhide</string>
     <string name="launcher_unpin">Unpin</string>
@@ -115,6 +115,13 @@
     <string name="launcher_quick_unhide">Show in Drawer</string>
     <string name="launcher_quick_detox_2h">Detox Lock · 2 Hours</string>
     <string name="launcher_quick_rename">Rename Label</string>
+    <string name="launcher_wheel_open_app">Open %1$s</string>
+    <string name="launcher_wheel_locked_app">Locked · %1$s</string>
+    <string name="launcher_wheel_options_cd">App options</string>
+    <string name="launcher_wheel_empty">No matching apps</string>
+    <string name="launcher_wheel_hint">Spin wheel · Tap center to open</string>
+    <string name="launcher_wheel_count">%1$d / %2$d</string>
+    <string name="launcher_usage_minutes">%1$d min</string>
 
     <!-- Messages Screen -->
     <string name="messages_title">Reminder Messages</string>
@@ -170,5 +177,63 @@
     <string name="notif_text_takeover">Takeover active · Type challenge or lock screen</string>
     <string name="notif_text_detox">Detox lock active · Returning home</string>
     <string name="notif_text_prompt">Waiting for session duration choice</string>
-    <string name="notif_action_disarm">Disarm</string>
+
+    <!-- Anti-Bypass Friction Gate -->
+    <string name="friction_disarm_title">Disarm Usage Guard?</string>
+    <string name="friction_disarm_subtitle">Turning off protection should be deliberate. Type the words below, then hold for 5 seconds.</string>
+    <string name="friction_detox_title">Unlock %1$s early?</string>
+    <string name="friction_detox_subtitle">You locked this app on purpose. Type the words below, then hold for 5 seconds to break the lock.</string>
+    <string name="friction_challenge_label">STEP 1 · TYPE ALL %1$d WORDS</string>
+    <string name="friction_hold_locked">TYPE WORDS FIRST</string>
+    <string name="friction_hold_disarm">STEP 2 · HOLD 5s TO DISARM</string>
+    <string name="friction_hold_unlock">STEP 2 · HOLD 5s TO UNLOCK</string>
+    <string name="friction_hold_end_deep_work">STEP 2 · HOLD 5s TO END</string>
+    <string name="friction_holding_progress">HOLDING · %1$ds</string>
+    <string name="friction_keep_protected">Keep Protected</string>
+    <string name="friction_deep_work_title">End Deep Work early?</string>
+    <string name="friction_deep_work_subtitle">You committed to a focused session. Type the words below, then hold for 5 seconds to stop early.</string>
+
+    <!-- Deep Work Mode -->
+    <string name="deep_work_bar_idle_title">Deep Work</string>
+    <string name="deep_work_bar_idle_sub">Silence alerts &amp; lock distracting apps</string>
+    <string name="deep_work_bar_start_pill">START</string>
+    <string name="deep_work_bar_active_title">DEEP WORK ACTIVE</string>
+    <string name="deep_work_bar_active_sub">Until %1$s · Silenced · %2$d categories</string>
+    <string name="deep_work_bar_active_strict_sub">Until %1$s · Silenced · All non-exempt</string>
+    <string name="deep_work_dialog_title">Deep Work</string>
+    <string name="deep_work_dialog_subtitle">Silence non-exception alerts &amp; block distractions.</string>
+    <string name="deep_work_until_section">FOCUS UNTIL</string>
+    <string name="deep_work_until_clock">UNTIL %1$s</string>
+    <string name="deep_work_decrease_cd">Decrease by 15 minutes</string>
+    <string name="deep_work_increase_cd">Increase by 15 minutes</string>
+    <string name="deep_work_categories_section">RESTRICT CATEGORIES</string>
+    <string name="deep_work_strict_title">All non-exception apps</string>
+    <string name="deep_work_strict_desc">Allow only your %1$d exception app(s) while active.</string>
+    <string name="deep_work_dnd_ready">Do Not Disturb ready · Non-exception alerts silenced</string>
+    <string name="deep_work_dnd_prompt">Tap to grant Do Not Disturb access for instant silencing</string>
+    <string name="deep_work_start_cta">Enter Deep Work</string>
+    <string name="deep_work_active_scope_categories">Blocking: %1$s · Exception apps stay accessible.</string>
+    <string name="deep_work_active_scope_strict">Blocking all non-exception apps · %1$d exception app(s) allowed.</string>
+    <string name="deep_work_extend_15m">+15 min</string>
+    <string name="deep_work_keep_focusing">Stay Focused</string>
+    <string name="deep_work_end_early">End Deep Work Early</string>
+    <string name="deep_work_pill_tag">DEEP WORK</string>
+    <string name="deep_work_wheel_locked">Deep Work · %1$s</string>
+    <string name="deep_work_blocked_badge">DEEP WORK ACTIVE</string>
+    <string name="deep_work_blocked_headline">%1$s is restricted.</string>
+    <string name="deep_work_blocked_subcopy_category">%1$s apps are locked during Deep Work. Stay on task until the session ends.</string>
+    <string name="deep_work_blocked_subcopy_generic">Non-exception apps are locked during Deep Work. Stay on task until the session ends.</string>
+    <string name="notif_title_deep_work">Deep Work Active</string>
+    <string name="notif_text_deep_work">Silenced &amp; blocking distractions · %1$s remaining</string>
+    <string name="notif_text_deep_work_blocked">App restricted during Deep Work · %1$s remaining</string>
+
+    <!-- Home Swipe Focus Note View -->
+    <string name="launcher_focus_eyebrow">WHAT MATTERS</string>
+    <string name="launcher_focus_edit_button">Edit Note</string>
+    <string name="launcher_focus_swipe_back_hint">Swipe right for apps</string>
+    <string name="launcher_focus_edit_title">What\'s Important</string>
+    <string name="launcher_focus_edit_hint">Write your priority, mantra, or reminder…</string>
+    <string name="launcher_focus_char_count">%1$d / 240</string>
+    <string name="launcher_page_home_cd">Home apps page</string>
+    <string name="launcher_page_focus_cd">Important reminder page</string>
 </resources>

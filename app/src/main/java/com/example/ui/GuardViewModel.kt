@@ -5,6 +5,7 @@ import android.content.Intent
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.R
+import com.example.data.DistractingCategory
 import com.example.data.GuardDefaults
 import com.example.data.GuardRuntimeSnapshot
 import com.example.data.GuardRuntimeState
@@ -15,6 +16,8 @@ import com.example.data.OverlayContent
 import com.example.data.PermissionSnapshot
 import com.example.launcher.MinimalistLauncherActivity
 import com.example.service.ScreenGuardService
+import com.example.util.DailyAppUsageLoader
+import com.example.util.DeepWorkSilenceController
 import com.example.util.DeviceAppEntry
 import com.example.util.InstalledAppsLoader
 import com.example.util.PermissionChecker
@@ -42,6 +45,7 @@ private data class LocalUiSlice(
     val isDefaultHome: Boolean,
     val rawApps: List<DeviceAppEntry>,
     val isLoadingApps: Boolean,
+    val todayUsageMinutes: Map<String, Int>,
     val searchQuery: String,
     val previewOverlay: OverlayContent?,
     val snackbarMessage: String?
@@ -56,6 +60,7 @@ class GuardViewModel(application: Application) : AndroidViewModel(application) {
     private val isDefaultHomeFlow = MutableStateFlow(PermissionChecker.isDefaultHomeLauncher(appContext))
     private val rawAppsFlow = MutableStateFlow<List<DeviceAppEntry>>(emptyList())
     private val isLoadingAppsFlow = MutableStateFlow(true)
+    private val todayUsageMinutesFlow = MutableStateFlow<Map<String, Int>>(emptyMap())
     private val appSearchQueryFlow = MutableStateFlow("")
     private val previewOverlayFlow = MutableStateFlow<OverlayContent?>(null)
     private val snackbarMessageFlow = MutableStateFlow<String?>(null)
@@ -64,13 +69,15 @@ class GuardViewModel(application: Application) : AndroidViewModel(application) {
         permissionsFlow,
         isDefaultHomeFlow,
         rawAppsFlow,
-        isLoadingAppsFlow
-    ) { perms, isHome, apps, loading ->
+        isLoadingAppsFlow,
+        todayUsageMinutesFlow
+    ) { perms, isHome, apps, loading, usageMap ->
         LocalUiSlice(
             permissions = perms,
             isDefaultHome = isHome,
             rawApps = apps,
             isLoadingApps = loading,
+            todayUsageMinutes = usageMap,
             searchQuery = "",
             previewOverlay = null,
             snackbarMessage = null
@@ -107,7 +114,9 @@ class GuardViewModel(application: Application) : AndroidViewModel(application) {
                 blockedUntilMillis = blockedUntil,
                 isPrompted = entry.packageName in settings.promptedPackages,
                 isPinnedFavorite = entry.packageName in favoritesSet,
-                isHiddenInLauncher = entry.packageName in settings.launcherHiddenPackages
+                isHiddenInLauncher = entry.packageName in settings.launcherHiddenPackages,
+                todayUsageMinutes = local.todayUsageMinutes[entry.packageName] ?: 0,
+                category = entry.category
             )
         }
         val effectiveTarget = if (runtime.activeSessionPackage != null) {
@@ -141,6 +150,7 @@ class GuardViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         refreshInstalledApps()
+        refreshDailyUsage()
         syncServiceWithPersistedState()
     }
 
@@ -148,8 +158,10 @@ class GuardViewModel(application: Application) : AndroidViewModel(application) {
         val fresh = PermissionChecker.checkAll(appContext)
         permissionsFlow.value = fresh
         isDefaultHomeFlow.value = PermissionChecker.isDefaultHomeLauncher(appContext)
+        refreshDailyUsage()
         viewModelScope.launch {
             repository.pruneExpiredDetoxLocks()
+            cleanupExpiredDeepWorkIfNeeded()
             val persisted = repository.getCurrentSettings()
             if (persisted.isGuardEnabled && !fresh.canArmGuard) {
                 repository.setGuardEnabled(false)
@@ -159,6 +171,12 @@ class GuardViewModel(application: Application) : AndroidViewModel(application) {
             } else if (!persisted.hasActiveEnforcement()) {
                 ScreenGuardService.stop(appContext)
             }
+        }
+    }
+
+    fun refreshDailyUsage() {
+        viewModelScope.launch {
+            todayUsageMinutesFlow.value = DailyAppUsageLoader.loadTodayUsageMinutes(appContext)
         }
     }
 
@@ -295,10 +313,7 @@ class GuardViewModel(application: Application) : AndroidViewModel(application) {
     // Minimalist Launcher customization
     fun toggleLauncherFavorite(packageName: String) {
         viewModelScope.launch {
-            val changed = repository.toggleLauncherFavorite(packageName)
-            if (!changed) {
-                snackbarMessageFlow.value = "Home screen supports up to 7 pinned favorites."
-            }
+            repository.toggleLauncherFavorite(packageName)
         }
     }
 
@@ -314,6 +329,10 @@ class GuardViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { repository.setShowGuardStatusOnHome(show) }
     }
 
+    fun setHomeFocusMantra(text: String) {
+        viewModelScope.launch { repository.setHomeFocusMantra(text) }
+    }
+
     fun openDefaultHomeSettings() {
         PermissionChecker.openDefaultHomeSettings(appContext)
     }
@@ -322,6 +341,52 @@ class GuardViewModel(application: Application) : AndroidViewModel(application) {
         val intent = Intent(appContext, MinimalistLauncherActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         runCatching { appContext.startActivity(intent) }
+    }
+
+    // Deep Work Mode
+    fun startDeepWork(
+        untilMillis: Long,
+        categories: Set<DistractingCategory>,
+        strictAllNonExempt: Boolean
+    ) {
+        viewModelScope.launch {
+            val now = System.currentTimeMillis()
+            val safeUntil = untilMillis.coerceAtLeast(now + 60_000L)
+            val savedFilter = DeepWorkSilenceController.enableSilence(appContext)
+            repository.startDeepWork(
+                untilMillis = safeUntil,
+                categories = categories,
+                strictAllNonExempt = strictAllNonExempt,
+                savedInterruptionFilter = savedFilter
+            )
+            val perms = PermissionChecker.checkAll(appContext)
+            permissionsFlow.value = perms
+            val persisted = repository.getCurrentSettings()
+            syncEnforcementServiceLocked(perms, persisted)
+        }
+    }
+
+    fun extendDeepWork(extraMinutes: Int) {
+        viewModelScope.launch {
+            repository.extendDeepWork(extraMinutes * 60_000L)
+            val perms = PermissionChecker.checkAll(appContext)
+            permissionsFlow.value = perms
+            syncEnforcementServiceLocked(perms)
+        }
+    }
+
+    fun endDeepWorkEarly() {
+        viewModelScope.launch {
+            val savedFilter = repository.clearDeepWork()
+            DeepWorkSilenceController.restoreSilence(appContext, savedFilter)
+            val perms = PermissionChecker.checkAll(appContext)
+            permissionsFlow.value = perms
+            syncEnforcementServiceLocked(perms)
+        }
+    }
+
+    fun openDndPolicyAccessSettings() {
+        PermissionChecker.openDndPolicyAccessSettings(appContext)
     }
 
     // Reminder Messages CRUD
@@ -378,6 +443,7 @@ class GuardViewModel(application: Application) : AndroidViewModel(application) {
     private fun syncServiceWithPersistedState() {
         viewModelScope.launch {
             repository.pruneExpiredDetoxLocks()
+            cleanupExpiredDeepWorkIfNeeded()
             val persisted = repository.getCurrentSettings()
             val perms = PermissionChecker.checkAll(appContext)
             permissionsFlow.value = perms
@@ -387,6 +453,14 @@ class GuardViewModel(application: Application) : AndroidViewModel(application) {
             } else {
                 syncEnforcementServiceLocked(perms, persisted)
             }
+        }
+    }
+
+    private suspend fun cleanupExpiredDeepWorkIfNeeded() {
+        val persisted = repository.getCurrentSettings()
+        if (persisted.deepWorkUntilMillis > 0L && !persisted.isDeepWorkActive()) {
+            val savedFilter = repository.clearDeepWork()
+            DeepWorkSilenceController.restoreSilence(appContext, savedFilter)
         }
     }
 

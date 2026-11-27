@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.DoNotDisturbOn
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.outlined.Timer
@@ -69,7 +70,9 @@ fun DetoxBlockedScreen(
     appLabel: String,
     blockedUntilMillis: Long,
     onReturnHome: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    isDeepWork: Boolean = false,
+    categoryLabel: String? = null
 ) {
     BackHandler(enabled = true) { onReturnHome() }
 
@@ -135,13 +138,17 @@ fun DetoxBlockedScreen(
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Icon(
-                            imageVector = Icons.Filled.Lock,
+                            imageVector = if (isDeepWork) Icons.Filled.DoNotDisturbOn else Icons.Filled.Lock,
                             contentDescription = null,
                             tint = SignalVermilion,
                             modifier = Modifier.size(16.dp)
                         )
                         Text(
-                            text = stringResource(R.string.detox_badge),
+                            text = if (isDeepWork) {
+                                stringResource(R.string.deep_work_blocked_badge)
+                            } else {
+                                stringResource(R.string.detox_badge)
+                            },
                             style = MaterialTheme.typography.labelMedium,
                             color = AlabasterInk
                         )
@@ -151,7 +158,11 @@ fun DetoxBlockedScreen(
                 Spacer(modifier = Modifier.height(36.dp))
 
                 Text(
-                    text = stringResource(R.string.detox_headline, appLabel),
+                    text = if (isDeepWork) {
+                        stringResource(R.string.deep_work_blocked_headline, appLabel)
+                    } else {
+                        stringResource(R.string.detox_headline, appLabel)
+                    },
                     style = MaterialTheme.typography.displayMedium,
                     color = AlabasterInk,
                     textAlign = TextAlign.Center
@@ -160,7 +171,14 @@ fun DetoxBlockedScreen(
                 Spacer(modifier = Modifier.height(14.dp))
 
                 Text(
-                    text = stringResource(R.string.detox_subcopy),
+                    text = when {
+                        isDeepWork && !categoryLabel.isNullOrBlank() ->
+                            stringResource(R.string.deep_work_blocked_subcopy_category, categoryLabel)
+                        isDeepWork ->
+                            stringResource(R.string.deep_work_blocked_subcopy_generic)
+                        else ->
+                            stringResource(R.string.detox_subcopy)
+                    },
                     style = MaterialTheme.typography.bodyLarge,
                     color = ZincSecondary,
                     textAlign = TextAlign.Center

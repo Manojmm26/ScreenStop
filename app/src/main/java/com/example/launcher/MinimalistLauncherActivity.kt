@@ -54,6 +54,7 @@ class MinimalistLauncherActivity : ComponentActivity() {
         super.onResume()
         viewModel.refreshPermissions()
         viewModel.refreshInstalledApps()
+        viewModel.refreshDailyUsage()
     }
 
     override fun onStop() {

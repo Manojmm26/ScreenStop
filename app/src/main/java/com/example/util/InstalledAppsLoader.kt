@@ -10,13 +10,15 @@ import android.graphics.drawable.Drawable
 import android.os.Build
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import com.example.data.DistractingCategory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
 
 data class DeviceAppEntry(
     val packageName: String,
-    val label: String
+    val label: String,
+    val category: DistractingCategory? = null
 )
 
 object InstalledAppsLoader {
@@ -42,11 +44,15 @@ object InstalledAppsLoader {
             val ownPackage = context.packageName
             val seen = HashSet<String>()
             resolveInfos.mapNotNull { info ->
-                val pkg = info.activityInfo?.packageName ?: return@mapNotNull null
+                val activityInfo = info.activityInfo ?: return@mapNotNull null
+                val pkg = activityInfo.packageName ?: return@mapNotNull null
                 if (pkg == ownPackage || !seen.add(pkg)) return@mapNotNull null
                 val label = info.loadLabel(pm)?.toString()?.trim().orEmpty()
                     .ifEmpty { pkg }
-                DeviceAppEntry(packageName = pkg, label = label)
+                val category = activityInfo.applicationInfo?.let { appInfo ->
+                    AppCategoryClassifier.classifyAppInfo(appInfo, label)
+                } ?: AppCategoryClassifier.classify(packageName = pkg, label = label)
+                DeviceAppEntry(packageName = pkg, label = label, category = category)
             }.sortedBy { it.label.lowercase() }
         }
 

@@ -1,7 +1,13 @@
 package com.example
 
+import com.example.data.DistractingCategory
 import com.example.data.GuardSettings
+import com.example.data.InstalledAppInfo
 import com.example.service.GuardSessionTracker
+import com.example.util.AppCategoryClassifier
+import com.example.util.DailyAppUsageLoader
+import com.example.util.DailyUsageEvent
+import com.example.util.DailyUsageEventType
 import com.example.util.ForegroundEventResolver
 import com.example.util.RecentLauncherLaunch
 import com.example.util.UsageActivityEvent
@@ -207,5 +213,95 @@ class ScreenStopEngineTest {
             blockedAppsUntilMillis = mapOf(xPkg to now - 1_000L)
         )
         assertFalse(expiredDetoxOnly.hasActiveEnforcement(now))
+    }
+
+    @Test
+    fun dailyUsageAggregation_countsLocalDayMinutesAndRespectsFiveMinuteThreshold() {
+        val minute = 60_000L
+        val events = listOf(
+            // Own launcher open for 10 min -> must be excluded
+            DailyUsageEvent(ownPkg, "MinimalistLauncherActivity", DailyUsageEventType.RESUMED, 0L),
+            // X opens for 8 min across two activities without losing time, then screen locks
+            DailyUsageEvent(xPkg, "MainActivity", DailyUsageEventType.RESUMED, 10 * minute),
+            DailyUsageEvent(xPkg, "TweetDetailActivity", DailyUsageEventType.RESUMED, 14 * minute),
+            DailyUsageEvent(xPkg, "MainActivity", DailyUsageEventType.PAUSED_OR_STOPPED, 14 * minute + 200L),
+            DailyUsageEvent("", "", DailyUsageEventType.SCREEN_OFF_OR_LOCKED, 18 * minute),
+            // WhatsApp opens for 4 min, then switches to X for 6 more min (total X = 14 min)
+            DailyUsageEvent(whatsappPkg, "HomeActivity", DailyUsageEventType.RESUMED, 25 * minute),
+            DailyUsageEvent(xPkg, "MainActivity", DailyUsageEventType.RESUMED, 29 * minute),
+            DailyUsageEvent(xPkg, "MainActivity", DailyUsageEventType.PAUSED_OR_STOPPED, 35 * minute)
+        )
+
+        val totals = DailyAppUsageLoader.aggregateTodayMinutesFromEvents(
+            events = events,
+            nowMillis = 40 * minute,
+            ownPackageName = ownPkg
+        )
+
+        assertNull(totals[ownPkg])
+        assertEquals(14, totals[xPkg])
+        assertEquals(4, totals[whatsappPkg])
+
+        val xInfo = InstalledAppInfo(packageName = xPkg, label = "X", todayUsageMinutes = totals[xPkg] ?: 0)
+        val waInfo = InstalledAppInfo(packageName = whatsappPkg, label = "WhatsApp", todayUsageMinutes = totals[whatsappPkg] ?: 0)
+        val exactFiveInfo = InstalledAppInfo(packageName = "com.test.five", label = "Five", todayUsageMinutes = 5)
+
+        assertTrue(xInfo.shouldShowDailyUsage)
+        assertFalse(waInfo.shouldShowDailyUsage)
+        assertTrue(exactFiveInfo.shouldShowDailyUsage)
+    }
+
+    @Test
+    fun deepWork_classifiesDistractingCategories_andRespectsExceptionsAndExpiry() {
+        assertEquals(
+            DistractingCategory.SOCIAL,
+            AppCategoryClassifier.classify("com.instagram.android", "Instagram")
+        )
+        assertEquals(
+            DistractingCategory.VIDEO,
+            AppCategoryClassifier.classify("com.google.android.youtube", "YouTube")
+        )
+        assertEquals(
+            DistractingCategory.GAMES,
+            AppCategoryClassifier.classify("com.supercell.clashroyale", "Clash Royale")
+        )
+        assertEquals(
+            DistractingCategory.SHOPPING,
+            AppCategoryClassifier.classify("com.amazon.mShop.android.shopping", "Amazon Shopping")
+        )
+        assertNull(
+            AppCategoryClassifier.classify("com.google.android.calendar", "Calendar")
+        )
+
+        val now = 1_000_000L
+        val settings = GuardSettings(
+            isGuardEnabled = false,
+            exceptionPackages = setOf(whatsappPkg),
+            deepWorkUntilMillis = now + 30 * 60_000L,
+            deepWorkCategories = setOf(DistractingCategory.SOCIAL, DistractingCategory.VIDEO),
+            deepWorkStrictAllNonExempt = false
+        )
+
+        assertTrue(settings.isDeepWorkActive(now))
+        assertTrue(settings.hasActiveEnforcement(now))
+
+        // Non-exception Social app is restricted during Deep Work
+        assertTrue(settings.isRestrictedByDeepWork(xPkg, DistractingCategory.SOCIAL, now))
+        // Exception app is NEVER restricted even though WhatsApp is classified as Social
+        assertFalse(settings.isRestrictedByDeepWork(whatsappPkg, DistractingCategory.SOCIAL, now))
+        // Unselected category (Shopping) & non-distracting utility (Calendar) stay open
+        assertFalse(settings.isRestrictedByDeepWork("com.amazon.mshop", DistractingCategory.SHOPPING, now))
+        assertFalse(settings.isRestrictedByDeepWork("com.google.android.calendar", null, now))
+
+        // Strict mode blocks all non-exception apps while preserving exceptions
+        val strictSettings = settings.copy(deepWorkStrictAllNonExempt = true)
+        assertTrue(strictSettings.isRestrictedByDeepWork("com.google.android.calendar", null, now))
+        assertFalse(strictSettings.isRestrictedByDeepWork(whatsappPkg, DistractingCategory.SOCIAL, now))
+
+        // After target end time, Deep Work expires automatically
+        val afterExpiry = now + 31 * 60_000L
+        assertFalse(settings.isDeepWorkActive(afterExpiry))
+        assertFalse(settings.isRestrictedByDeepWork(xPkg, DistractingCategory.SOCIAL, afterExpiry))
+        assertFalse(settings.hasActiveEnforcement(afterExpiry))
     }
 }
